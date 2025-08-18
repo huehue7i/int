@@ -1,0 +1,20 @@
+{
+  "name": "discord-moderation-bot",
+  "version": "1.0.0",
+  "description": "A Discord moderation bot with essential commands",
+  "main": "main.js",
+  "scripts": {
+    "start": "node start.js",
+    "dev": "node start.js --skip-deploy",
+    "deploy": "node deploy-commands.js",
+    "bot": "node main.js",
+    "quick": "node start.js --skip-deps"
+  },
+  "keywords": ["discord", "bot", "moderation"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.3.1"
+  }
+}
