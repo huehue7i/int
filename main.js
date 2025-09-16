@@ -2118,6 +2118,12 @@ client.on('messageCreate', async message => {
     // Check for custom commands first
     const guildCommands = getGuildCustomCommands(message.guild.id);
     if (guildCommands.has(commandName)) {
+        // Check if user has permission to use custom commands
+        if (!hasCustomCommandPermissions(message.member)) {
+            const embed = createErrorEmbed('Permission Denied', 'Only authorized users, server owners, and bot owners can use custom commands.');
+            return message.reply({ embeds: [embed] });
+        }
+        
         const customCommand = guildCommands.get(commandName);
         const processedResponse = processCustomCommandResponse(
             customCommand.response,
