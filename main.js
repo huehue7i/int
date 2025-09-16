@@ -198,6 +198,12 @@ function isAuthorizedGuild(guildId) {
     return authorizedGuilds.includes(guildId);
 }
 
+function hasCustomCommandPermissions(member) {
+    return isBotOwner(member.id) ||
+           member.guild.ownerId === member.id ||
+           isAuthorizedUser(member.id);
+}
+
 function isPrivateModeEnabled() {
     return process.env.PRIVATE_MODE === 'true';
 }
@@ -5981,6 +5987,14 @@ async function handleStarboardSlash(interaction) {
 }
 
 async function handleCustomSlash(interaction) {
+    // Check if user has permission to use custom commands
+    if (!hasCustomCommandPermissions(interaction.member)) {
+        return interaction.reply({ 
+            embeds: [createErrorEmbed('Permission Denied', 'Only authorized users, server owners, and bot owners can use custom command features.')], 
+            flags: MessageFlags.Ephemeral 
+        });
+    }
+    
     const subcommand = interaction.options.getSubcommand();
     const guildCommands = getGuildCustomCommands(interaction.guild.id);
     
@@ -6019,11 +6033,144 @@ async function handleCustomSlash(interaction) {
                 createdAt: Date.now()
             });
             
+            // Save to storage
+            DataStorage.saveData('customCommands', customCommands);
+            
             const createEmbed = createSuccessEmbed(
                 'Custom Command Created',
                 `Command \`!${createName}\` has been created!\nTrigger it with \`!${createName}\``
             );
             await interaction.reply({ embeds: [createEmbed] });
+            break;
+            
+        case 'edit':
+            const editName = interaction.options.getString('name').toLowerCase();
+            const editResponse = interaction.options.getString('response');
+            const editType = interaction.options.getString('type');
+            
+            if (!guildCommands.has(editName)) {
+                return interaction.reply({ 
+                    embeds: [createErrorEmbed('Command Not Found', 'No custom command with this name exists.')], 
+                    flags: MessageFlags.Ephemeral 
+                });
+            }
+            
+            const existingCommand = guildCommands.get(editName);
+            
+            // Check if user has permission to edit (command creator or custom command permissions)
+            if (existingCommand.createdBy !== interaction.user.id && 
+                !hasCustomCommandPermissions(interaction.member)) {
+                return interaction.reply({ 
+                    embeds: [createErrorEmbed('Permission Denied', 'You can only edit commands you created, or you need authorized user/server owner/bot owner permissions.')], 
+                    flags: MessageFlags.Ephemeral 
+                });
+            }
+            
+            // Update the command
+            existingCommand.response = editResponse;
+            if (editType) existingCommand.type = editType;
+            existingCommand.editedBy = interaction.user.id;
+            existingCommand.editedAt = Date.now();
+            
+            guildCommands.set(editName, existingCommand);
+            
+            // Save to storage
+            DataStorage.saveData('customCommands', customCommands);
+            
+            const editEmbed = createSuccessEmbed(
+                'Custom Command Updated',
+                `Command \`!${editName}\` has been updated successfully!`
+            );
+            await interaction.reply({ embeds: [editEmbed] });
+            break;
+            
+        case 'delete':
+            const deleteName = interaction.options.getString('name').toLowerCase();
+            
+            if (!guildCommands.has(deleteName)) {
+                return interaction.reply({ 
+                    embeds: [createErrorEmbed('Command Not Found', 'No custom command with this name exists.')], 
+                    flags: MessageFlags.Ephemeral 
+                });
+            }
+            
+            const commandToDelete = guildCommands.get(deleteName);
+            
+            // Check if user has permission to delete (command creator or custom command permissions)
+            if (commandToDelete.createdBy !== interaction.user.id && 
+                !hasCustomCommandPermissions(interaction.member)) {
+                return interaction.reply({ 
+                    embeds: [createErrorEmbed('Permission Denied', 'You can only delete commands you created, or you need authorized user/server owner/bot owner permissions.')], 
+                    flags: MessageFlags.Ephemeral 
+                });
+            }
+            
+            // Delete the command
+            guildCommands.delete(deleteName);
+            
+            // Save to storage
+            DataStorage.saveData('customCommands', customCommands);
+            
+            const deleteEmbed = createSuccessEmbed(
+                'Custom Command Deleted',
+                `Command \`!${deleteName}\` has been deleted successfully.`
+            );
+            await interaction.reply({ embeds: [deleteEmbed] });
+            break;
+            
+        case 'info':
+            const infoName = interaction.options.getString('name').toLowerCase();
+            
+            if (!guildCommands.has(infoName)) {
+                return interaction.reply({ 
+                    embeds: [createErrorEmbed('Command Not Found', 'No custom command with this name exists.')], 
+                    flags: MessageFlags.Ephemeral 
+                });
+            }
+            
+            const commandInfo = guildCommands.get(infoName);
+            
+            try {
+                const creator = await client.users.fetch(commandInfo.createdBy);
+                
+                const infoEmbed = new EmbedBuilder()
+                    .setColor('#4ecdc4')
+                    .setTitle(`📋 Command Info: !${commandInfo.name}`)
+                    .addFields(
+                        { name: 'Response Type', value: commandInfo.type, inline: true },
+                        { name: 'Created By', value: creator.tag, inline: true },
+                        { name: 'Created', value: `<t:${Math.floor(commandInfo.createdAt / 1000)}:R>`, inline: true },
+                        { name: 'Response Preview', value: commandInfo.response.length > 100 ? commandInfo.response.substring(0, 100) + '...' : commandInfo.response, inline: false }
+                    )
+                    .setTimestamp();
+                
+                if (commandInfo.editedAt) {
+                    try {
+                        const editor = await client.users.fetch(commandInfo.editedBy);
+                        infoEmbed.addFields(
+                            { name: 'Last Edited By', value: editor.tag, inline: true },
+                            { name: 'Last Edited', value: `<t:${Math.floor(commandInfo.editedAt / 1000)}:R>`, inline: true }
+                        );
+                    } catch (error) {
+                        infoEmbed.addFields({ name: 'Last Edited', value: `<t:${Math.floor(commandInfo.editedAt / 1000)}:R>`, inline: true });
+                    }
+                }
+                
+                await interaction.reply({ embeds: [infoEmbed], flags: MessageFlags.Ephemeral });
+            } catch (error) {
+                console.error('Error fetching command creator:', error);
+                const infoEmbed = new EmbedBuilder()
+                    .setColor('#4ecdc4')
+                    .setTitle(`📋 Command Info: !${commandInfo.name}`)
+                    .addFields(
+                        { name: 'Response Type', value: commandInfo.type, inline: true },
+                        { name: 'Created', value: `<t:${Math.floor(commandInfo.createdAt / 1000)}:R>`, inline: true },
+                        { name: 'Response Preview', value: commandInfo.response.length > 100 ? commandInfo.response.substring(0, 100) + '...' : commandInfo.response, inline: false }
+                    )
+                    .setTimestamp();
+                
+                await interaction.reply({ embeds: [infoEmbed], flags: MessageFlags.Ephemeral });
+            }
             break;
             
         case 'list':
@@ -6044,12 +6191,15 @@ async function handleCustomSlash(interaction) {
                 });
             });
             
+            if (guildCommands.size > 25) {
+                listEmbed.setFooter({ text: `Showing 25 of ${guildCommands.size} commands` });
+            }
+            
             await interaction.reply({ embeds: [listEmbed] });
             break;
             
-        // Add other custom command subcommands (edit, delete, info)
         default:
-            await interaction.reply({ embeds: [createErrorEmbed('Not Implemented', 'This subcommand is not yet implemented.')], flags: MessageFlags.Ephemeral });
+            await interaction.reply({ embeds: [createErrorEmbed('Unknown Subcommand', 'This subcommand is not recognized.')], flags: MessageFlags.Ephemeral });
     }
 }
 
