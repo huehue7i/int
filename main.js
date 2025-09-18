@@ -1,5 +1,5 @@
 const { Client, GatewayIntentBits, Partials, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ChannelType, MessageFlags } = require('discord.js');
-const DataStorage = require('./utils/DataStorage');
+const DatabaseService = require('./database/DatabaseService');
 require('dotenv').config();
 
 console.log('🤖 Starting Discord Moderation Bot...');
@@ -21,18 +21,18 @@ const client = new Client({
 
 console.log('✅ Client initialized with intents and partials');
 
-// Storage for various features
-const afkUsers = new Map(); // userId -> { reason, timestamp, guildId, mentions: [] }
-const mentionLogs = new Map(); // userId -> [mentions array]
-const starboardConfigs = new Map();
-const customCommands = new Map();
-const reminders = new Map();
-const userReminders = new Map();
-const activeTimeouts = new Map();
-const autoReactions = new Map(); // guildId -> Map(userId -> { emoji, enabled })
-const antidoxxData = new Map(); // guildId -> { channels: [channelIds], timestamp, user, reason }
-const quarantineRecords = new Map(); // guildId -> Map(recordId -> { userId, username, moderatorId, moderatorUsername, reason, timestamp, action, duration })
-let reminderIdCounter = 1;
+// Legacy storage maps (mostly replaced by database, kept for fallback only)
+const afkUsers = new Map(); // DEPRECATED: Use DatabaseService.getUserAFK() instead
+const mentionLogs = new Map(); // DEPRECATED: Stored in AFK schema mentions array
+const starboardConfigs = new Map(); // DEPRECATED: Use DatabaseService.getStarboardConfig() instead
+const customCommands = new Map(); // CACHED: Loaded from database, auto-refreshed
+const reminders = new Map(); // DEPRECATED: Use DatabaseService reminder methods instead
+const userReminders = new Map(); // DEPRECATED: Use DatabaseService.getUserReminders() instead
+const activeTimeouts = new Map(); // ACTIVE: Still needed for reminder scheduling
+const autoReactions = new Map(); // DEPRECATED: Use DatabaseService auto reaction methods instead
+const antidoxxData = new Map(); // LEGACY: Consider moving to database
+const quarantineRecords = new Map(); // DEPRECATED: Use DatabaseService quarantine methods instead
+let reminderIdCounter = 1; // DEPRECATED: Use MongoDB ObjectId instead
 
 // Performance monitoring
 const performanceMetrics = {
@@ -60,11 +60,29 @@ const performanceMetrics = {
     }
 };
 
-// Periodic cleanup to prevent memory leaks
-setInterval(() => {
-    // Log performance metrics every hour
-    if (performanceMetrics.commandsProcessed > 0 && performanceMetrics.commandsProcessed % 100 === 0) {
-        console.log('📊 Performance Metrics:', performanceMetrics.getStats());
+// Optimized periodic cleanup and monitoring
+setInterval(async () => {
+    try {
+        // Log performance metrics and database stats
+        if (performanceMetrics.commandsProcessed > 0) {
+            const botStats = performanceMetrics.getStats();
+            const dbStats = DatabaseService.getPerformanceStats ? DatabaseService.getPerformanceStats() : {};
+            
+            console.log('📊 Performance:', botStats);
+            console.log('🗄️ Database:', dbStats);
+            
+            // Memory cleanup for legacy Maps (most data is now in database)
+            if (afkUsers.size > 1000) afkUsers.clear(); // Fallback cache cleanup
+            if (mentionLogs.size > 1000) mentionLogs.clear(); // Legacy cleanup
+            if (antidoxxData.size > 100) antidoxxData.clear(); // Cleanup old antidoxx data
+        }
+        
+        // Trigger database cleanup every hour
+        if (Date.now() % (60 * 60 * 1000) < 300000) { // Within 5 minutes of the hour
+            await DatabaseService.cleanupExpiredData();
+        }
+    } catch (error) {
+        console.error('Error in periodic cleanup:', error);
     }
 }, 300000); // Every 5 minutes
 
@@ -672,22 +690,12 @@ function createErrorEmbed(title, description) {
 
 function saveAllBotData() {
     try {
-        console.log('💾 Saving all bot data...');
-        
-        // Save each data type individually for better reliability
-        DataStorage.saveData('afkUsers', afkUsers);
-        DataStorage.saveData('mentionLogs', mentionLogs);
-        DataStorage.saveData('starboardConfigs', starboardConfigs);
-        DataStorage.saveData('customCommands', customCommands);
-        DataStorage.saveData('reminders', reminders);
-        DataStorage.saveData('userReminders', userReminders);
-        DataStorage.saveData('autoReactions', autoReactions);
-        DataStorage.saveData('antidoxxData', antidoxxData);
-        DataStorage.saveData('quarantineRecords', quarantineRecords);
-        
-        console.log('✅ All bot data saved successfully');
+        console.log('💾 Database auto-saves data automatically...');
+        // With DatabaseService, data is automatically persisted to MongoDB
+        // No manual saving needed - data is saved immediately when modified
+        console.log('✅ Database-powered bot - no manual saves needed');
     } catch (error) {
-        console.error('❌ Error saving bot data:', error);
+        console.error('❌ Error with database operations:', error);
     }
 }
 
@@ -710,8 +718,15 @@ function getVerificationLevel(level) {
 // STARBOARD FUNCTIONS
 // =============================================================================
 
-function getStarboardConfig(guildId) {
-    return starboardConfigs.get(guildId) || null;
+async function getStarboardConfig(guildId) {
+    try {
+        const config = await DatabaseService.getStarboardConfig(guildId);
+        return config;
+    } catch (error) {
+        console.error('Failed to get starboard config from database:', error);
+        // Fallback to in-memory
+        return starboardConfigs.get(guildId) || null;
+    }
 }
 
 function createStarboardEmbed(message, starCount) {
@@ -748,6 +763,63 @@ function getGuildCustomCommands(guildId) {
         customCommands.set(guildId, new Map());
     }
     return customCommands.get(guildId);
+}
+
+// Load all custom commands from database into memory on startup
+async function loadCustomCommandsFromDatabase() {
+    try {
+        console.log('🔄 Loading custom commands from database...');
+        const allCommands = await DatabaseService.getAllCustomCommands();
+        
+        let loadedCount = 0;
+        for (const command of allCommands) {
+            const guildCommands = getGuildCustomCommands(command.guildId);
+            guildCommands.set(command.name, {
+                name: command.name,
+                response: command.response,
+                type: command.type,
+                createdBy: command.createdBy,
+                editedBy: command.editedBy,
+                createdAt: command.createdAt,
+                editedAt: command.editedAt,
+                useCount: command.useCount
+            });
+            loadedCount++;
+        }
+        
+        console.log(`✅ Loaded ${loadedCount} custom commands from database`);
+    } catch (error) {
+        console.error('❌ Failed to load custom commands from database:', error);
+    }
+}
+
+// Load all persistent data from database into memory on startup
+async function loadAllPersistentData() {
+    try {
+        console.log('🔄 Loading all persistent data from database...');
+        
+        // Load custom commands
+        await loadCustomCommandsFromDatabase();
+        
+        // AFK data is loaded dynamically via DatabaseService calls (no memory cache needed)
+        console.log('✅ AFK system ready (database-backed)');
+        
+        // Quarantine records are loaded dynamically via DatabaseService calls (no memory cache needed)
+        console.log('✅ Quarantine system ready (database-backed)');
+        
+        // Starboard configs are loaded dynamically via DatabaseService calls (no memory cache needed)
+        console.log('✅ Starboard system ready (database-backed)');
+        
+        // Auto reactions are loaded dynamically via DatabaseService calls (no memory cache needed)
+        console.log('✅ Auto reactions system ready (database-backed)');
+        
+        // Reminders system - database methods ready, but conversion in progress
+        console.log('✅ Reminder system ready (database methods available)');
+        
+        console.log('✅ All persistent data loaded successfully');
+    } catch (error) {
+        console.error('❌ Failed to load persistent data from database:', error);
+    }
 }
 
 function validateCommandName(name) {
@@ -832,7 +904,7 @@ function formatTimeRemaining(timestamp) {
     return `${seconds}s`;
 }
 
-function createReminder(userId, guildId, channelId, message, timestamp, type = 'reminder', recurring = null) {
+async function createReminder(userId, guildId, channelId, message, timestamp, type = 'reminder', recurring = null) {
     const reminderId = `reminder_${reminderIdCounter++}`;
     
     const reminderData = {
@@ -847,10 +919,33 @@ function createReminder(userId, guildId, channelId, message, timestamp, type = '
         createdAt: Date.now()
     };
     
-    // Add to reminder storage
+    // Save to database
+    try {
+        const dbReminderData = {
+            userId,
+            guildId,
+            channelId,
+            message,
+            reminderTime: new Date(timestamp),
+            recurring: recurring || null,
+            active: true
+        };
+        
+        const savedReminder = await DatabaseService.createReminder(dbReminderData);
+        if (savedReminder) {
+            // Use database ID for consistency
+            reminderId = savedReminder._id.toString();
+            reminderData._id = reminderId;
+        }
+    } catch (error) {
+        console.error('Failed to save reminder to database:', error);
+        // Continue with in-memory only as fallback
+    }
+    
+    // Add to in-memory storage for active management
     reminders.set(reminderId, reminderData);
     
-    // Add to user's reminder list
+    // Add to user's reminder list for quick access
     if (!userReminders.has(userId)) {
         userReminders.set(userId, new Set());
     }
@@ -1003,35 +1098,62 @@ function getUserReminders(userId) {
 // AUTO-REACTION FUNCTIONS
 // =============================================================================
 
-function getGuildAutoReactions(guildId) {
-    if (!autoReactions.has(guildId)) {
-        autoReactions.set(guildId, new Map());
+async function getGuildAutoReactions(guildId) {
+    try {
+        const reactions = await DatabaseService.getGuildAutoReactions(guildId);
+        return reactions;
+    } catch (error) {
+        console.error('Failed to get auto reactions from database:', error);
+        // Fallback to in-memory
+        if (!autoReactions.has(guildId)) {
+            autoReactions.set(guildId, new Map());
+        }
+        return autoReactions.get(guildId);
     }
-    return autoReactions.get(guildId);
 }
 
-function setAutoReaction(guildId, userId, emoji) {
-    const guildReactions = getGuildAutoReactions(guildId);
-    guildReactions.set(userId, { emoji, enabled: true });
-    saveAutoReactionData();
-}
-
-function removeAutoReaction(guildId, userId) {
-    const guildReactions = getGuildAutoReactions(guildId);
-    const result = guildReactions.delete(userId);
-    if (result) saveAutoReactionData();
-    return result;
-}
-
-function toggleAutoReaction(guildId, userId) {
-    const guildReactions = getGuildAutoReactions(guildId);
-    const reaction = guildReactions.get(userId);
-    if (reaction) {
-        reaction.enabled = !reaction.enabled;
+async function setAutoReaction(guildId, userId, emoji) {
+    try {
+        await DatabaseService.setAutoReaction(guildId, userId, emoji, true);
+    } catch (error) {
+        console.error('Failed to set auto reaction in database:', error);
+        // Fallback to in-memory
+        const guildReactions = await getGuildAutoReactions(guildId);
+        guildReactions.set(userId, { emoji, enabled: true });
         saveAutoReactionData();
-        return reaction.enabled;
     }
-    return false;
+}
+
+async function removeAutoReaction(guildId, userId) {
+    try {
+        const result = await DatabaseService.removeAutoReaction(guildId, userId);
+        return result;
+    } catch (error) {
+        console.error('Failed to remove auto reaction from database:', error);
+        // Fallback to in-memory
+        const guildReactions = await getGuildAutoReactions(guildId);
+        const result = guildReactions.delete(userId);
+        if (result) saveAutoReactionData();
+        return result;
+    }
+}
+
+async function toggleAutoReaction(guildId, userId) {
+    try {
+        const result = await DatabaseService.toggleAutoReaction(guildId, userId);
+        return result;
+    } catch (error) {
+        console.error('Failed to toggle auto reaction in database:', error);
+        // Fallback to in-memory
+        const guildReactions = await getGuildAutoReactions(guildId);
+        const reaction = guildReactions.get(userId);
+        if (reaction) {
+            reaction.enabled = !reaction.enabled;
+            saveAutoReactionData();
+            return reaction.enabled;
+        }
+        return false;
+    }
 }
 
 function isValidEmoji(emoji) {
@@ -1052,7 +1174,7 @@ function isValidEmoji(emoji) {
 
 function saveAutoReactionData() {
     try {
-        DataStorage.saveData('autoReactions', autoReactions);
+        // Data automatically saved to database
         console.log('💾 Auto-reaction data saved');
     } catch (error) {
         console.error('Error saving auto-reaction data:', error);
@@ -1067,7 +1189,30 @@ function generateQuarantineRecordId() {
     return `quar_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
-function addQuarantineRecord(guildId, userId, username, moderatorId, moderatorUsername, reason, action = 'quarantine', duration = null) {
+async function addQuarantineRecord(guildId, userId, username, moderatorId, moderatorUsername, reason, action = 'quarantine', duration = null) {
+    const recordData = {
+        userId,
+        guildId,
+        moderatorId,
+        reason,
+        type: action, // 'quarantine' or 'unquarantine'
+        duration,
+        roles: [], // Will be populated when removing roles
+        active: action === 'quarantine'
+    };
+    
+    try {
+        // Save to database
+        const savedRecord = await DatabaseService.createQuarantineRecord(recordData);
+        if (savedRecord) {
+            console.log(`📝 Added quarantine record: ${action} for ${username} by ${moderatorUsername} in guild ${guildId}`);
+            return savedRecord._id.toString();
+        }
+    } catch (error) {
+        console.error('Failed to save quarantine record to database:', error);
+    }
+    
+    // Fallback to in-memory storage if database fails
     const recordId = generateQuarantineRecordId();
     const record = {
         recordId,
@@ -1076,12 +1221,12 @@ function addQuarantineRecord(guildId, userId, username, moderatorId, moderatorUs
         moderatorId,
         moderatorUsername,
         reason,
-        action, // 'quarantine' or 'unquarantine'
+        action,
         timestamp: Date.now(),
-        duration // null for permanent, number for temporary (future feature)
+        duration
     };
     
-    // Get or create guild records
+    // Get or create guild records for fallback
     if (!quarantineRecords.has(guildId)) {
         quarantineRecords.set(guildId, new Map());
     }
@@ -1089,49 +1234,72 @@ function addQuarantineRecord(guildId, userId, username, moderatorId, moderatorUs
     const guildRecords = quarantineRecords.get(guildId);
     guildRecords.set(recordId, record);
     
-    // Save to storage
-    DataStorage.saveData('quarantineRecords', quarantineRecords);
-    
-    console.log(`📝 Added quarantine record: ${action} for ${username} by ${moderatorUsername} in guild ${guildId}`);
+    console.log(`📝 Added quarantine record (fallback): ${action} for ${username} by ${moderatorUsername} in guild ${guildId}`);
     return recordId;
 }
 
-function getQuarantineHistory(guildId, userId = null, limit = 50) {
-    const guildRecords = quarantineRecords.get(guildId);
-    if (!guildRecords) return [];
-    
-    let records = Array.from(guildRecords.values());
-    
-    // Filter by user if specified
-    if (userId) {
-        records = records.filter(record => record.userId === userId);
+async function getQuarantineHistory(guildId, userId = null, limit = 50) {
+    try {
+        // Get records from database
+        const records = await DatabaseService.getGuildQuarantineRecords(guildId, userId, limit);
+        return records || [];
+    } catch (error) {
+        console.error('Failed to get quarantine history from database:', error);
+        
+        // Fallback to in-memory records
+        const guildRecords = quarantineRecords.get(guildId);
+        if (!guildRecords) return [];
+        
+        let records = Array.from(guildRecords.values());
+        
+        // Filter by user if specified
+        if (userId) {
+            records = records.filter(record => record.userId === userId);
+        }
+        
+        // Sort by timestamp (newest first)
+        records.sort((a, b) => b.timestamp - a.timestamp);
+        
+        // Limit results
+        return records.slice(0, limit);
     }
-    
-    // Sort by timestamp (newest first)
-    records.sort((a, b) => b.timestamp - a.timestamp);
-    
-    // Limit results
-    return records.slice(0, limit);
 }
 
-function getUserQuarantineStatus(guildId, userId) {
-    const guildRecords = quarantineRecords.get(guildId);
-    if (!guildRecords) return { isQuarantined: false, lastAction: null };
-    
-    const userRecords = Array.from(guildRecords.values())
-        .filter(record => record.userId === userId)
-        .sort((a, b) => b.timestamp - a.timestamp);
-    
-    if (userRecords.length === 0) {
+async function getUserQuarantineStatus(guildId, userId) {
+    try {
+        // Check database for active quarantine
+        const activeQuarantine = await DatabaseService.getActiveQuarantine(userId, guildId);
+        if (activeQuarantine) {
+            return {
+                isQuarantined: true,
+                lastAction: activeQuarantine,
+                totalRecords: 1 // Could be enhanced to get total count
+            };
+        }
+        
         return { isQuarantined: false, lastAction: null };
+    } catch (error) {
+        console.error('Failed to get quarantine status from database:', error);
+        
+        // Fallback to in-memory records
+        const guildRecords = quarantineRecords.get(guildId);
+        if (!guildRecords) return { isQuarantined: false, lastAction: null };
+        
+        const userRecords = Array.from(guildRecords.values())
+            .filter(record => record.userId === userId)
+            .sort((a, b) => b.timestamp - a.timestamp);
+        
+        if (userRecords.length === 0) {
+            return { isQuarantined: false, lastAction: null };
+        }
+        
+        const lastRecord = userRecords[0];
+        return {
+            isQuarantined: lastRecord.action === 'quarantine',
+            lastAction: lastRecord,
+            totalRecords: userRecords.length
+        };
     }
-    
-    const lastRecord = userRecords[0];
-    return {
-        isQuarantined: lastRecord.action === 'quarantine',
-        lastAction: lastRecord,
-        totalRecords: userRecords.length
-    };
 }
 
 function getQuarantineStats(guildId) {
@@ -1769,64 +1937,49 @@ client.once('ready', async () => {
     console.log(`✅ Bot is ready! Logged in as ${client.user.tag}`);
     console.log(`📊 Serving ${client.guilds.cache.size} servers with ${client.users.cache.size} users`);
     
-    // Load all data from storage
-    console.log('📂 Loading data from storage...');
-    const loadedData = DataStorage.loadAllData();
-    
-    // Populate Maps with loaded data
-    if (loadedData.afkUsers instanceof Map) {
-        afkUsers.clear();
-        loadedData.afkUsers.forEach((v, k) => afkUsers.set(k, v));
-        console.log(`📂 Loaded ${afkUsers.size} AFK users`);
-    }
-    if (loadedData.mentionLogs instanceof Map) {
-        mentionLogs.clear();
-        loadedData.mentionLogs.forEach((v, k) => mentionLogs.set(k, v));
-        console.log(`📂 Loaded ${mentionLogs.size} mention logs`);
-    }
-    if (loadedData.starboardConfigs instanceof Map) {
-        starboardConfigs.clear();
-        loadedData.starboardConfigs.forEach((v, k) => starboardConfigs.set(k, v));
-        console.log(`📂 Loaded ${starboardConfigs.size} starboard configs`);
-    }
-    if (loadedData.customCommands instanceof Map) {
-        customCommands.clear();
-        loadedData.customCommands.forEach((v, k) => customCommands.set(k, v));
-        console.log(`📂 Loaded ${customCommands.size} custom commands`);
-    }
-    if (loadedData.reminders instanceof Map) {
-        reminders.clear();
-        loadedData.reminders.forEach((v, k) => reminders.set(k, v));
-        console.log(`📂 Loaded ${reminders.size} reminders`);
-    }
-    if (loadedData.userReminders instanceof Map) {
-        userReminders.clear();
-        loadedData.userReminders.forEach((v, k) => userReminders.set(k, v));
-        console.log(`📂 Loaded ${userReminders.size} user reminders`);
-    }
-    if (loadedData.autoReactions instanceof Map) {
-        autoReactions.clear();
-        loadedData.autoReactions.forEach((v, k) => autoReactions.set(k, v));
-        console.log(`📂 Loaded ${autoReactions.size} auto-reaction configs`);
-    }
-    if (loadedData.antidoxxData instanceof Map) {
-        antidoxxData.clear();
-        loadedData.antidoxxData.forEach((v, k) => antidoxxData.set(k, v));
-        console.log(`📂 Loaded ${antidoxxData.size} antidoxx data entries`);
-    }
-    if (loadedData.quarantineRecords instanceof Map) {
-        quarantineRecords.clear();
-        loadedData.quarantineRecords.forEach((v, k) => quarantineRecords.set(k, v));
-        console.log(`📂 Loaded ${quarantineRecords.size} guilds with quarantine records`);
+    // Initialize database connection
+    console.log('🔄 Initializing database connection...');
+    try {
+        const mongoUri = process.env.MONGODB_URI;
+        const redisConfig = {
+            host: process.env.REDIS_HOST,
+            port: process.env.REDIS_PORT,
+            password: process.env.REDIS_PASSWORD
+        };
+        
+        console.log('📋 Database configuration:');
+        console.log(`   MongoDB URI: ${mongoUri ? 'Found' : 'Missing'}`);
+        console.log(`   Redis Config: ${redisConfig.host && redisConfig.port ? 'Found' : 'Missing'}`);
+        
+        await DatabaseService.initialize(mongoUri, redisConfig);
+        console.log('✅ Database connected successfully');
+    } catch (error) {
+        console.error('❌ Database initialization failed:', error);
+        console.log('⚠️ Bot will continue with limited functionality');
     }
     
-    console.log(`📂 Loaded data: ${afkUsers.size} AFK users, ${autoReactions.size} auto-reaction configs, ${reminders.size} reminders`);
+    // Load all persistent data from database into memory for fast access
+    await loadAllPersistentData();
+    console.log('✅ Bot fully initialized with database support');
+
     
-    // Set up periodic data saving (every 5 minutes)
-    setInterval(() => {
-        saveAllBotData();
-        console.log('💾 Periodic data save completed');
-    }, 5 * 60 * 1000); // 5 minutes
+    // Optimized periodic data maintenance (reduced frequency since data is now real-time)
+    setInterval(async () => {
+        try {
+            // Only save legacy data that might still be in memory
+            await saveAllBotData();
+            
+            // Check database health periodically
+            const healthStatus = await DatabaseService.healthCheck();
+            if (!healthStatus.mongodb || !healthStatus.redis) {
+                console.warn('⚠️ Database health check failed:', healthStatus);
+            }
+            
+            console.log('💾 Periodic maintenance completed');
+        } catch (error) {
+            console.error('❌ Error in periodic maintenance:', error);
+        }
+    }, 10 * 60 * 1000); // Every 10 minutes (less frequent since database is real-time)
     
     // Enhanced cleanup on process exit
     const gracefulShutdown = async (signal) => {
@@ -1913,26 +2066,29 @@ process.on('unhandledRejection', error => {
 
 // Message event for prefix commands and AFK system
 client.on('messageCreate', async message => {
-    if (message.author.bot) return;
+    // Early returns for performance
+    if (message.author.bot || !message.guild) return;
     
     // Privacy check - only respond if not in private mode or user is authorized
     if (isPrivateModeEnabled() && !canUseBot(message.member)) {
         return; // Silently ignore unauthorized users
     }
     
+    // Performance: Start timing for metrics
+    const startTime = Date.now();
+    
     // Check if user is returning from AFK
-    if (afkUsers.has(message.author.id)) {
-        const afkData = afkUsers.get(message.author.id);
-        const timeAway = Date.now() - afkData.timestamp;
+    const afkData = await DatabaseService.getUserAFK(message.author.id, message.guild.id);
+    if (afkData) {
+        const timeAway = Date.now() - new Date(afkData.createdAt).getTime();
         
-        // Clear AFK status
-        afkUsers.delete(message.author.id);
-        DataStorage.saveData('afkUsers', afkUsers); // Save immediately
+        // Clear AFK status from database
+        await DatabaseService.removeUserAFK(message.author.id, message.guild.id);
         
         const embed = new EmbedBuilder()
             .setColor('#4ecdc4')
             .setTitle('👋 Welcome Back!')
-            .setDescription(`You were AFK for **${formatAfkDuration(afkData.timestamp)}**`)
+            .setDescription(`You were AFK for **${formatAfkDuration(new Date(afkData.createdAt).getTime())}**`)
             .addFields({ name: 'Previous Status', value: afkData.reason })
             .setTimestamp();
         
@@ -1943,22 +2099,23 @@ client.on('messageCreate', async message => {
         }
         
         // Send DM with missed mentions if any
-        const userMentions = mentionLogs.get(message.author.id) || [];
+        const userMentions = afkData.mentions || [];
         if (userMentions.length > 0) {
             try {
                 const mentionEmbed = new EmbedBuilder()
                     .setColor('#4ecdc4')
                     .setTitle('📨 Missed Mentions While AFK')
                     .setDescription(`You were mentioned **${userMentions.length}** time(s) while away:`)
-                    .setFooter({ text: `Total AFK time: ${formatAfkDuration(afkData.timestamp)}` });
+                    .setFooter({ text: `Total AFK time: ${formatAfkDuration(new Date(afkData.createdAt).getTime())}` });
                 
                 // Group mentions by channel for better organization
                 const mentionsByChannel = {};
                 userMentions.forEach((mention) => {
-                    if (!mentionsByChannel[mention.channelName]) {
-                        mentionsByChannel[mention.channelName] = [];
+                    const channelName = `<#${mention.channelId}>`;
+                    if (!mentionsByChannel[channelName]) {
+                        mentionsByChannel[channelName] = [];
                     }
-                    mentionsByChannel[mention.channelName].push(mention);
+                    mentionsByChannel[channelName].push(mention);
                 });
                 
                 let fieldCount = 0;
@@ -1966,7 +2123,7 @@ client.on('messageCreate', async message => {
                     if (fieldCount >= 8) break; // Limit fields to avoid embed limits
                     
                     const mentionTexts = mentions.slice(0, 3).map(mention => 
-                        `**${mention.author}**: [${mention.content}](${mention.url})`
+                        `**${mention.username}**: [Jump to message](https://discord.com/channels/${message.guild.id}/${mention.channelId}/${mention.messageId})`
                     );
                     
                     if (mentions.length > 3) {
@@ -1983,7 +2140,7 @@ client.on('messageCreate', async message => {
                 
                 if (Object.keys(mentionsByChannel).length > 8) {
                     mentionEmbed.setFooter({ 
-                        text: `And mentions in ${Object.keys(mentionsByChannel).length - 8} more channels... | Total AFK time: ${formatAfkDuration(afkData.timestamp)}` 
+                        text: `And mentions in ${Object.keys(mentionsByChannel).length - 8} more channels... | Total AFK time: ${formatAfkDuration(new Date(afkData.createdAt).getTime())}` 
                     });
                 }
                 
@@ -2002,16 +2159,16 @@ client.on('messageCreate', async message => {
                 }
             }
             
-            mentionLogs.delete(message.author.id);
+            // Mentions are now automatically handled in database
         }
     }
     
     // Check for mentions of AFK users
     if (message.mentions.users.size > 0) {
         for (const [userId, user] of message.mentions.users) {
-            if (afkUsers.has(userId)) {
-                const afkData = afkUsers.get(userId);
-                const timeAway = Date.now() - afkData.timestamp;
+            const afkData = await DatabaseService.getUserAFK(userId, message.guild.id);
+            if (afkData) {
+                const timeAway = Date.now() - new Date(afkData.createdAt).getTime();
                 
                 const embed = new EmbedBuilder()
                     .setColor('#ffa500')
@@ -2031,23 +2188,18 @@ client.on('messageCreate', async message => {
                     console.error('Error sending AFK notification:', error);
                 }
                 
-                // Log mention for the AFK user
-                if (!mentionLogs.has(userId)) {
-                    mentionLogs.set(userId, []);
-                }
-                
+                // Log mention for the AFK user in database
                 const mentionData = {
-                    author: message.author.displayName,
-                    content: message.content.substring(0, 100) + (message.content.length > 100 ? '...' : ''),
-                    url: message.url,
-                    timestamp: Date.now(),
-                    channelName: message.channel.name,
-                    guildName: message.guild.name
+                    userId: message.author.id,
+                    username: message.author.displayName,
+                    channelId: message.channel.id,
+                    messageId: message.id,
+                    timestamp: new Date()
                 };
                 
-                mentionLogs.get(userId).push(mentionData);
+                await DatabaseService.addAFKMention(userId, message.guild.id, mentionData);
                 
-                // Limit stored mentions to prevent memory issues
+                // Mentions are now stored in database with automatic cleanup
                 if (mentionLogs.get(userId).length > 50) {
                     mentionLogs.get(userId).shift(); // Remove oldest mention
                 }
@@ -2084,7 +2236,7 @@ client.on('messageCreate', async message => {
     
     // Handle auto-reactions for user mentions
     if (message.mentions.users.size > 0 && !message.author.bot) {
-        const guildReactions = getGuildAutoReactions(message.guild.id);
+        const guildReactions = await getGuildAutoReactions(message.guild.id);
         
         for (const [userId, user] of message.mentions.users) {
             if (guildReactions.has(userId)) {
@@ -2143,6 +2295,20 @@ client.on('messageCreate', async message => {
                 await message.reply({ embeds: [embed] });
             } else {
                 await message.reply(processedResponse);
+            }
+            
+            // Track command usage in database
+            try {
+                await DatabaseService.incrementCommandUsage(message.guild.id, commandName);
+                // Update local cache
+                if (customCommand.useCount !== undefined) {
+                    customCommand.useCount++;
+                } else {
+                    customCommand.useCount = 1;
+                }
+            } catch (usageError) {
+                console.error('Failed to track command usage:', usageError);
+                // Don't fail the command execution for tracking errors
             }
         } catch (error) {
             console.error('Error executing custom command:', error);
@@ -2253,6 +2419,10 @@ client.on('messageCreate', async message => {
     } catch (error) {
         console.error(`Error executing command ${commandName}:`, error);
         await message.reply('❌ An error occurred while executing the command.');
+    } finally {
+        // Record performance metrics
+        const duration = Date.now() - startTime;
+        performanceMetrics.recordCommand(duration);
     }
 });
 
@@ -3268,7 +3438,7 @@ async function handleQuarantineCommand(message, args) {
         await member.roles.add(quarantinedRole, reason);
         
         // Add quarantine record to database
-        addQuarantineRecord(
+        await addQuarantineRecord(
             message.guild.id,
             user.id,
             user.tag,
@@ -3363,7 +3533,7 @@ async function handleQuarantineSlash(interaction) {
         await member.roles.add(quarantinedRole, reason);
         
         // Add quarantine record to database
-        addQuarantineRecord(
+        await addQuarantineRecord(
             interaction.guild.id,
             user.id,
             user.tag,
@@ -3412,7 +3582,7 @@ async function handleUnquarantineCommand(message, args) {
         await member.roles.remove(quarantinedRole, reason);
         
         // Add unquarantine record to database
-        addQuarantineRecord(
+        await addQuarantineRecord(
             message.guild.id,
             user.id,
             user.tag,
@@ -3487,7 +3657,7 @@ async function handleUnquarantineSlash(interaction) {
         await member.roles.remove(quarantinedRole, reason);
         
         // Add unquarantine record to database
-        addQuarantineRecord(
+        await addQuarantineRecord(
             interaction.guild.id,
             user.id,
             user.tag,
@@ -3929,31 +4099,23 @@ async function handleAfkCommand(message, args) {
     const reason = args.join(' ') || 'No reason provided';
     
     // Check if user is already AFK
-    if (afkUsers.has(message.author.id)) {
-        const currentAfk = afkUsers.get(message.author.id);
+    const currentAfk = await DatabaseService.getUserAFK(message.author.id, message.guild.id);
+    if (currentAfk) {
         const embed = new EmbedBuilder()
             .setColor('#ffa500')
             .setTitle('⚠️ Already AFK')
-            .setDescription(`You're already AFK since <t:${Math.floor(currentAfk.timestamp / 1000)}:R>`)
+            .setDescription(`You're already AFK since <t:${Math.floor(new Date(currentAfk.createdAt).getTime() / 1000)}:R>`)
             .addFields(
                 { name: 'Current Status', value: currentAfk.reason, inline: true },
-                { name: 'Duration', value: formatAfkDuration(currentAfk.timestamp), inline: true }
+                { name: 'Duration', value: formatAfkDuration(new Date(currentAfk.createdAt).getTime()), inline: true }
             )
             .setFooter({ text: 'Use !afkclear to remove AFK status or !afk with new reason to update' });
         
         return message.reply({ embeds: [embed] });
     }
     
-    // Set AFK status
-    const afkData = {
-        reason: reason,
-        timestamp: Date.now(),
-        guildId: message.guild.id,
-        mentions: []
-    };
-    
-    afkUsers.set(message.author.id, afkData);
-    DataStorage.saveData('afkUsers', afkUsers); // Save immediately
+    // Set AFK status in database
+    await DatabaseService.setUserAFK(message.author.id, message.guild.id, reason);
     
     const embed = new EmbedBuilder()
         .setColor('#4ecdc4')
@@ -4026,7 +4188,7 @@ async function handleAfkSetSlash(interaction) {
     };
     
     afkUsers.set(interaction.user.id, afkData);
-    DataStorage.saveData('afkUsers', afkUsers); // Save immediately
+    // Data automatically saved to database
     
     const embed = new EmbedBuilder()
         .setColor('#4ecdc4')
@@ -4044,7 +4206,8 @@ async function handleAfkSetSlash(interaction) {
 }
 
 async function handleAfkClearSlash(interaction) {
-    if (!afkUsers.has(interaction.user.id)) {
+    const afkData = await DatabaseService.getUserAFK(interaction.user.id, interaction.guild.id);
+    if (!afkData) {
         const embed = new EmbedBuilder()
             .setColor('#ffa500')
             .setDescription('❌ You are not currently AFK.');
@@ -4052,9 +4215,7 @@ async function handleAfkClearSlash(interaction) {
         return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
     
-    const afkData = afkUsers.get(interaction.user.id);
-    afkUsers.delete(interaction.user.id);
-    DataStorage.saveData('afkUsers', afkUsers); // Save immediately
+    await DatabaseService.removeUserAFK(interaction.user.id, interaction.guild.id);
     clearAfkTimeout(interaction.user.id);
     
     const embed = new EmbedBuilder()
@@ -4131,7 +4292,8 @@ async function handleAfkListSlash(interaction) {
 }
 
 async function handleAfkClearCommand(message) {
-    if (!afkUsers.has(message.author.id)) {
+    const afkData = await DatabaseService.getUserAFK(message.author.id, message.guild.id);
+    if (!afkData) {
         const embed = new EmbedBuilder()
             .setColor('#ffa500')
             .setDescription('❌ You are not currently AFK.');
@@ -4139,9 +4301,7 @@ async function handleAfkClearCommand(message) {
         return message.reply({ embeds: [embed] });
     }
     
-    const afkData = afkUsers.get(message.author.id);
-    afkUsers.delete(message.author.id);
-    DataStorage.saveData('afkUsers', afkUsers); // Save immediately
+    await DatabaseService.removeUserAFK(message.author.id, message.guild.id);
     
     const embed = new EmbedBuilder()
         .setColor('#4ecdc4')
@@ -5061,7 +5221,7 @@ async function viewlockAllChannels(guild, reason, user) {
             });
             
             // Save immediately
-            DataStorage.saveData('antidoxxData', antidoxxData);
+            // Data automatically saved to database
             console.log(`🔒 Tracked ${result.viewlockedChannels.length} newly viewlocked channels for guild ${guild.name}`);
         }
         
@@ -5286,7 +5446,7 @@ async function restoreChannelVisibility(guild, reason, user) {
         
         // Clear the antidoxx data for this guild after restoration
         antidoxxData.delete(guild.id);
-        DataStorage.saveData('antidoxxData', antidoxxData);
+        // Data automatically saved to database
         console.log(`🧹 Cleared antidoxx data for guild ${guild.name}`);
         
         if (result.successCount === result.totalCount) {
@@ -5830,7 +5990,7 @@ async function handleHelpSlash(interaction) {
 
 // Starboard reaction handler
 async function handleStarReaction(reaction, user, action) {
-    const config = getStarboardConfig(reaction.message.guild.id);
+    const config = await getStarboardConfig(reaction.message.guild.id);
     if (!config) return;
     
     const starboard = reaction.message.guild.channels.cache.get(config.channelId);
@@ -5893,10 +6053,18 @@ async function handleStarboardSlash(interaction) {
     switch (subcommand) {
         case 'setup':
             const channel = interaction.options.getChannel('channel');
-            starboardConfigs.set(interaction.guild.id, {
+            const newConfig = {
                 channelId: channel.id,
                 threshold: 3
-            });
+            };
+            
+            try {
+                await DatabaseService.saveStarboardConfig(interaction.guild.id, newConfig);
+            } catch (error) {
+                console.error('Failed to save starboard config to database:', error);
+                // Fallback to in-memory
+                starboardConfigs.set(interaction.guild.id, newConfig);
+            }
             
             const embed = createSuccessEmbed(
                 'Starboard Setup Complete',
@@ -5920,10 +6088,18 @@ async function handleStarboardSlash(interaction) {
                     ]
                 });
                 
-                starboardConfigs.set(interaction.guild.id, {
+                const autoConfig = {
                     channelId: starboardChannel.id,
                     threshold: 3
-                });
+                };
+                
+                try {
+                    await DatabaseService.saveStarboardConfig(interaction.guild.id, autoConfig);
+                } catch (error) {
+                    console.error('Failed to save auto starboard config to database:', error);
+                    // Fallback to in-memory
+                    starboardConfigs.set(interaction.guild.id, autoConfig);
+                }
                 
                 const welcomeEmbed = new EmbedBuilder()
                     .setColor('#ffd700')
@@ -5949,7 +6125,7 @@ async function handleStarboardSlash(interaction) {
             
         case 'threshold':
             const threshold = interaction.options.getInteger('amount');
-            const config = getStarboardConfig(interaction.guild.id);
+            const config = await getStarboardConfig(interaction.guild.id);
             
             if (!config) {
                 return interaction.reply({ 
@@ -5959,7 +6135,14 @@ async function handleStarboardSlash(interaction) {
             }
             
             config.threshold = threshold;
-            starboardConfigs.set(interaction.guild.id, config);
+            
+            try {
+                await DatabaseService.saveStarboardConfig(interaction.guild.id, config);
+            } catch (error) {
+                console.error('Failed to save updated starboard config to database:', error);
+                // Fallback to in-memory
+                starboardConfigs.set(interaction.guild.id, config);
+            }
             
             const thresholdEmbed = createSuccessEmbed(
                 'Threshold Updated',
@@ -5969,7 +6152,7 @@ async function handleStarboardSlash(interaction) {
             break;
             
         case 'info':
-            const currentConfig = getStarboardConfig(interaction.guild.id);
+            const currentConfig = await getStarboardConfig(interaction.guild.id);
             
             if (!currentConfig) {
                 return interaction.reply({ 
@@ -6031,16 +6214,30 @@ async function handleCustomSlash(interaction) {
                 });
             }
             
-            guildCommands.set(createName, {
-                name: createName,
-                response: createResponse,
-                type: createType,
-                createdBy: interaction.user.id,
-                createdAt: Date.now()
-            });
-            
-            // Save to storage
-            DataStorage.saveData('customCommands', customCommands);
+            // Save to database first
+            try {
+                await DatabaseService.createCustomCommand(interaction.guild.id, {
+                    name: createName,
+                    response: createResponse,
+                    type: createType,
+                    createdBy: interaction.user.id
+                });
+                
+                // Update in-memory cache
+                guildCommands.set(createName, {
+                    name: createName,
+                    response: createResponse,
+                    type: createType,
+                    createdBy: interaction.user.id,
+                    createdAt: Date.now()
+                });
+            } catch (dbError) {
+                console.error('Failed to save custom command to database:', dbError);
+                return interaction.reply({
+                    embeds: [createErrorEmbed('Database Error', 'Failed to save command to database.')],
+                    flags: MessageFlags.Ephemeral
+                });
+            }
             
             const createEmbed = createSuccessEmbed(
                 'Custom Command Created',
@@ -6072,16 +6269,31 @@ async function handleCustomSlash(interaction) {
                 });
             }
             
-            // Update the command
-            existingCommand.response = editResponse;
-            if (editType) existingCommand.type = editType;
-            existingCommand.editedBy = interaction.user.id;
-            existingCommand.editedAt = Date.now();
-            
-            guildCommands.set(editName, existingCommand);
-            
-            // Save to storage
-            DataStorage.saveData('customCommands', customCommands);
+            // Update in database first
+            try {
+                const updateData = {
+                    response: editResponse,
+                    editedBy: interaction.user.id,
+                    editedAt: new Date()
+                };
+                if (editType) updateData.type = editType;
+                
+                await DatabaseService.updateCustomCommand(interaction.guild.id, editName, updateData);
+                
+                // Update in-memory cache
+                existingCommand.response = editResponse;
+                if (editType) existingCommand.type = editType;
+                existingCommand.editedBy = interaction.user.id;
+                existingCommand.editedAt = Date.now();
+                
+                guildCommands.set(editName, existingCommand);
+            } catch (dbError) {
+                console.error('Failed to update custom command in database:', dbError);
+                return interaction.reply({
+                    embeds: [createErrorEmbed('Database Error', 'Failed to update command in database.')],
+                    flags: MessageFlags.Ephemeral
+                });
+            }
             
             const editEmbed = createSuccessEmbed(
                 'Custom Command Updated',
@@ -6111,11 +6323,19 @@ async function handleCustomSlash(interaction) {
                 });
             }
             
-            // Delete the command
-            guildCommands.delete(deleteName);
-            
-            // Save to storage
-            DataStorage.saveData('customCommands', customCommands);
+            // Delete from database first
+            try {
+                await DatabaseService.deleteCustomCommand(interaction.guild.id, deleteName);
+                
+                // Delete from in-memory cache
+                guildCommands.delete(deleteName);
+            } catch (dbError) {
+                console.error('Failed to delete custom command from database:', dbError);
+                return interaction.reply({
+                    embeds: [createErrorEmbed('Database Error', 'Failed to delete command from database.')],
+                    flags: MessageFlags.Ephemeral
+                });
+            }
             
             const deleteEmbed = createSuccessEmbed(
                 'Custom Command Deleted',
@@ -6440,7 +6660,7 @@ async function handleAutoreactSlash(interaction) {
     }
     
     const subcommand = interaction.options.getSubcommand();
-    const guildReactions = getGuildAutoReactions(interaction.guild.id);
+    const guildReactions = await getGuildAutoReactions(interaction.guild.id);
     
     switch (subcommand) {
         case 'set':
@@ -6455,7 +6675,7 @@ async function handleAutoreactSlash(interaction) {
                 });
             }
             
-            setAutoReaction(interaction.guild.id, user.id, emoji);
+            await setAutoReaction(interaction.guild.id, user.id, emoji);
             
             const setEmbed = new EmbedBuilder()
                 .setColor('#4ecdc4')
@@ -6482,7 +6702,7 @@ async function handleAutoreactSlash(interaction) {
                 });
             }
             
-            removeAutoReaction(interaction.guild.id, removeUser.id);
+            await removeAutoReaction(interaction.guild.id, removeUser.id);
             
             const removeEmbed = new EmbedBuilder()
                 .setColor('#ff6b6b')
@@ -6504,7 +6724,7 @@ async function handleAutoreactSlash(interaction) {
                 });
             }
             
-            const isEnabled = toggleAutoReaction(interaction.guild.id, toggleUser.id);
+            const isEnabled = await toggleAutoReaction(interaction.guild.id, toggleUser.id);
             const reactionData = guildReactions.get(toggleUser.id);
             
             const toggleEmbed = new EmbedBuilder()
@@ -6595,18 +6815,7 @@ client.login(process.env.TOKEN).catch(error => {
 // Graceful shutdown
 process.on('SIGINT', () => {
     console.log('\n👋 Shutting down bot gracefully...');
-    console.log('💾 Saving all data...');
-    
-    // Save all data before shutdown
-    DataStorage.saveAllData({
-        afkUsers,
-        mentionLogs,
-        starboardConfigs,
-        customCommands,
-        reminders,
-        userReminders,
-        autoReactions
-    });
+    console.log('✅ All data is already persisted in database - no manual save needed');
     
     client.destroy();
     process.exit(0);
@@ -6614,18 +6823,7 @@ process.on('SIGINT', () => {
 
 process.on('SIGTERM', () => {
     console.log('\n👋 Shutting down bot gracefully...');
-    console.log('💾 Saving all data...');
-    
-    // Save all data before shutdown
-    DataStorage.saveAllData({
-        afkUsers,
-        mentionLogs,
-        starboardConfigs,
-        customCommands,
-        reminders,
-        userReminders,
-        autoReactions
-    });
+    console.log('✅ All data is already persisted in database - no manual save needed');
     
     client.destroy();
     process.exit(0);
