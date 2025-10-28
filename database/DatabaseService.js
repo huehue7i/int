@@ -594,7 +594,8 @@ class DatabaseService {
                 if (cached) return cached;
             }
             
-            const config = await Starboard.findOne({ guildId }).lean();
+            // Fetch the config entry (marked with __CONFIG__ messageId)
+            const config = await Starboard.findOne({ guildId, messageId: '__CONFIG__' }).lean();
             
             if (config && this.isRedisAvailable()) {
                 await this.redis.setStarboardConfig(guildId, config);
@@ -604,6 +605,33 @@ class DatabaseService {
         } catch (error) {
             console.error('Error getting starboard config:', error);
             return null;
+        }
+    }
+
+    async saveStarboardConfig(guildId, config) {
+        try {
+            // Store config with a special marker to distinguish from message entries
+            await Starboard.findOneAndUpdate(
+                { guildId, messageId: '__CONFIG__' },
+                { 
+                    guildId,
+                    messageId: '__CONFIG__',
+                    channelId: config.channelId,
+                    threshold: config.threshold || 3,
+                    emoji: config.emoji || '⭐'
+                },
+                { upsert: true }
+            );
+            
+            // Invalidate cache
+            if (this.isRedisAvailable()) {
+                await this.redis.client.del(`starboard:${guildId}`);
+            }
+            
+            return true;
+        } catch (error) {
+            console.error('Error saving starboard config:', error);
+            return false;
         }
     }
 
@@ -638,6 +666,69 @@ class DatabaseService {
         } catch (error) {
             console.error('Error getting starboard entry:', error);
             return null;
+        }
+    }
+
+    async getAllStarboardConfigs() {
+        try {
+            // Get all starboard configurations (marked with __CONFIG__ messageId)
+            const configs = await Starboard.find({ messageId: '__CONFIG__' })
+                .select('guildId channelId threshold emoji')
+                .lean();
+            
+            return configs.map(config => ({
+                guildId: config.guildId,
+                channelId: config.channelId,
+                threshold: config.threshold || 3,
+                emoji: config.emoji || '⭐'
+            }));
+        } catch (error) {
+            console.error('Error getting all starboard configs:', error);
+            return [];
+        }
+    }
+
+    async getAllStarboardMessages() {
+        try {
+            // Get all starboard messages with mapping (exclude config entries)
+            const messages = await Starboard.find({ 
+                starboardMessageId: { $ne: null },
+                messageId: { $ne: '__CONFIG__' }
+            })
+                .select('messageId starboardMessageId')
+                .lean();
+            
+            return messages.map(msg => ({
+                originalMessageId: msg.messageId,
+                starboardMessageId: msg.starboardMessageId
+            }));
+        } catch (error) {
+            console.error('Error getting all starboard messages:', error);
+            return [];
+        }
+    }
+
+    async saveStarboardMessage(guildId, originalMessageId, starboardMessageId) {
+        try {
+            await Starboard.findOneAndUpdate(
+                { guildId, messageId: originalMessageId },
+                { starboardMessageId },
+                { upsert: true }
+            );
+            return true;
+        } catch (error) {
+            console.error('Error saving starboard message:', error);
+            return false;
+        }
+    }
+
+    async deleteStarboardMessage(guildId, originalMessageId) {
+        try {
+            await Starboard.deleteOne({ guildId, messageId: originalMessageId });
+            return true;
+        } catch (error) {
+            console.error('Error deleting starboard message:', error);
+            return false;
         }
     }
 

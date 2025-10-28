@@ -24,7 +24,8 @@ console.log('✅ Client initialized with intents and partials');
 // Legacy storage maps (FULLY DEPRECATED - all data now in DatabaseService)
 // const afkUsers = new Map(); // REMOVED: Now uses DatabaseService.getUserAFK()
 // const mentionLogs = new Map(); // REMOVED: Stored in AFK schema mentions array
-const starboardConfigs = new Map(); // DEPRECATED: Use DatabaseService.getStarboardConfig() instead
+const starboardConfigs = new Map(); // ACTIVE: Loaded from database on startup
+const starboardMessages = new Map(); // ACTIVE: Maps originalMessageId -> starboardMessageId
 const customCommands = new Map(); // CACHED: Loaded from database, auto-refreshed
 const reminders = new Map(); // DEPRECATED: Use DatabaseService reminder methods instead
 const userReminders = new Map(); // DEPRECATED: Use DatabaseService.getUserReminders() instead
@@ -799,14 +800,39 @@ async function loadAllPersistentData() {
         // Load custom commands
         await loadCustomCommandsFromDatabase();
         
+        // Load starboard configurations
+        try {
+            const configs = await DatabaseService.getAllStarboardConfigs();
+            starboardConfigs.clear();
+            for (const config of configs) {
+                starboardConfigs.set(config.guildId, {
+                    channelId: config.channelId,
+                    threshold: config.threshold || 3,
+                    emoji: config.emoji || '⭐'
+                });
+            }
+            console.log(`✅ Loaded ${configs.length} starboard config(s) from database`);
+        } catch (error) {
+            console.error('⚠️ Failed to load starboard configs:', error);
+        }
+        
+        // Load starboard message mappings
+        try {
+            const mappings = await DatabaseService.getAllStarboardMessages();
+            starboardMessages.clear();
+            for (const mapping of mappings) {
+                starboardMessages.set(mapping.originalMessageId, mapping.starboardMessageId);
+            }
+            console.log(`✅ Loaded ${mappings.length} starboard message mapping(s) from database`);
+        } catch (error) {
+            console.error('⚠️ Failed to load starboard messages:', error);
+        }
+        
         // AFK data is loaded dynamically via DatabaseService calls (no memory cache needed)
         console.log('✅ AFK system ready (database-backed)');
         
         // Quarantine records are loaded dynamically via DatabaseService calls (no memory cache needed)
         console.log('✅ Quarantine system ready (database-backed)');
-        
-        // Starboard configs are loaded dynamically via DatabaseService calls (no memory cache needed)
-        console.log('✅ Starboard system ready (database-backed)');
         
         // Auto reactions are loaded dynamically via DatabaseService calls (no memory cache needed)
         console.log('✅ Auto reactions system ready (database-backed)');
@@ -2615,34 +2641,98 @@ client.on('interactionCreate', async interaction => {
 
 // Message reaction handlers for starboard
 client.on('messageReactionAdd', async (reaction, user) => {
-    if (user.bot) return;
-    if (reaction.partial) {
-        try {
-            await reaction.fetch();
-        } catch (error) {
-            console.error('Error fetching reaction:', error);
-            return;
+    try {
+        if (user.bot) return;
+        
+        // Fetch partial reactions
+        if (reaction.partial) {
+            try {
+                await reaction.fetch();
+            } catch (error) {
+                console.error('Error fetching reaction:', error);
+                return;
+            }
         }
-    }
-    
-    if (reaction.emoji.name === '⭐') {
-        await handleStarReaction(reaction, user, 'add');
+        
+        // Fetch partial messages
+        if (reaction.message.partial) {
+            try {
+                await reaction.message.fetch();
+            } catch (error) {
+                console.error('Error fetching message:', error);
+                return;
+            }
+        }
+        
+        if (reaction.emoji.name === '⭐') {
+            await handleStarReaction(reaction, user, 'add');
+        }
+    } catch (error) {
+        console.error('Error in messageReactionAdd:', error);
     }
 });
 
 client.on('messageReactionRemove', async (reaction, user) => {
-    if (user.bot) return;
-    if (reaction.partial) {
-        try {
-            await reaction.fetch();
-        } catch (error) {
-            console.error('Error fetching reaction:', error);
-            return;
+    try {
+        if (user.bot) return;
+        
+        // Fetch partial reactions
+        if (reaction.partial) {
+            try {
+                await reaction.fetch();
+            } catch (error) {
+                console.error('Error fetching reaction:', error);
+                return;
+            }
         }
+        
+        // Fetch partial messages
+        if (reaction.message.partial) {
+            try {
+                await reaction.message.fetch();
+            } catch (error) {
+                console.error('Error fetching message:', error);
+                return;
+            }
+        }
+        
+        if (reaction.emoji.name === '⭐') {
+            await handleStarReaction(reaction, user, 'remove');
+        }
+    } catch (error) {
+        console.error('Error in messageReactionRemove:', error);
     }
-    
-    if (reaction.emoji.name === '⭐') {
-        await handleStarReaction(reaction, user, 'remove');
+});
+
+// Handle message deletion to clean up starboard
+client.on('messageDelete', async (message) => {
+    try {
+        // Check if this message was on the starboard
+        if (starboardMessages.has(message.id)) {
+            const starboardMessageId = starboardMessages.get(message.id);
+            const config = starboardConfigs.get(message.guild.id);
+            
+            if (config && config.channelId) {
+                try {
+                    const starboardChannel = await message.guild.channels.fetch(config.channelId);
+                    if (starboardChannel) {
+                        // Delete the starboard message
+                        const starboardMsg = await starboardChannel.messages.fetch(starboardMessageId).catch(() => null);
+                        if (starboardMsg) {
+                            await starboardMsg.delete();
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error deleting starboard message:', error);
+                }
+            }
+            
+            // Remove from tracking
+            starboardMessages.delete(message.id);
+            await DatabaseService.deleteStarboardMessage(message.guild.id, message.id);
+        }
+    } catch (error) {
+        console.error('Error in messageDelete handler:', error);
     }
 });
 
@@ -6575,52 +6665,94 @@ async function handleHelpSlash(interaction) {
 
 // Starboard reaction handler
 async function handleStarReaction(reaction, user, action) {
-    const config = await getStarboardConfig(reaction.message.guild.id);
-    if (!config) return;
-    
-    const starboard = reaction.message.guild.channels.cache.get(config.channelId);
-    if (!starboard) return;
-    
-    // Don't allow users to star their own messages
-    if (reaction.message.author.id === user.id) {
-        try {
-            await reaction.users.remove(user.id);
-        } catch (error) {
-            console.error('Error removing self-star:', error);
-        }
-        return;
-    }
-    
-    const starCount = reaction.count;
-    const messageId = reaction.message.id;
-    
     try {
-        // Find existing starboard message
-        const existingMessages = await starboard.messages.fetch({ limit: 100 });
-        const existingMessage = existingMessages.find(msg => 
-            msg.embeds.length > 0 && 
-            msg.embeds[0].fields?.some(field => 
-                field.name === 'Original Message' && 
-                field.value.includes(messageId)
-            )
-        );
+        const config = starboardConfigs.get(reaction.message.guild.id);
+        if (!config) return;
         
-        if (starCount >= config.threshold) {
+        // Check if message author exists
+        if (!reaction.message.author) {
+            console.log('Starboard: Message author not available');
+            return;
+        }
+        
+        // Don't allow users to star their own messages
+        if (reaction.message.author.id === user.id) {
+            try {
+                await reaction.users.remove(user.id);
+            } catch (error) {
+                console.error('Error removing self-star:', error);
+            }
+            return;
+        }
+        
+        // Get starboard channel
+        let starboardChannel;
+        try {
+            starboardChannel = await reaction.message.guild.channels.fetch(config.channelId);
+            if (!starboardChannel) {
+                console.log('Starboard: Channel not found');
+                return;
+            }
+        } catch (error) {
+            console.error('Error fetching starboard channel:', error);
+            return;
+        }
+        
+        // Get current star count by fetching fresh reaction data
+        const starReaction = reaction.message.reactions.cache.get('⭐');
+        const starCount = starReaction ? starReaction.count : 0;
+        const messageId = reaction.message.id;
+        
+        const threshold = config.threshold || 3;
+        
+        // Check if message is already on starboard
+        const existingStarboardMessageId = starboardMessages.get(messageId);
+        let existingStarboardMessage = null;
+        
+        if (existingStarboardMessageId) {
+            try {
+                existingStarboardMessage = await starboardChannel.messages.fetch(existingStarboardMessageId);
+            } catch (error) {
+                // Starboard message was deleted, clean up
+                starboardMessages.delete(messageId);
+                await DatabaseService.deleteStarboardMessage(reaction.message.guild.id, messageId);
+            }
+        }
+        
+        if (starCount >= threshold) {
             const embed = createStarboardEmbed(reaction.message, starCount);
             
-            if (existingMessage) {
+            if (existingStarboardMessage) {
                 // Update existing message
-                await existingMessage.edit({ embeds: [embed] });
+                await existingStarboardMessage.edit({ embeds: [embed] });
             } else {
                 // Create new starboard message
-                await starboard.send({ embeds: [embed] });
+                const starboardMsg = await starboardChannel.send({ embeds: [embed] });
+                
+                // Track the mapping
+                starboardMessages.set(messageId, starboardMsg.id);
+                await DatabaseService.saveStarboardMessage(
+                    reaction.message.guild.id,
+                    messageId,
+                    starboardMsg.id
+                );
             }
-        } else if (existingMessage && starCount < config.threshold) {
+        } else if (existingStarboardMessage && starCount < threshold) {
             // Remove from starboard if below threshold
-            await existingMessage.delete();
+            try {
+                await existingStarboardMessage.delete();
+                starboardMessages.delete(messageId);
+                await DatabaseService.deleteStarboardMessage(reaction.message.guild.id, messageId);
+            } catch (error) {
+                console.error('Error removing starboard message:', error);
+            }
         }
     } catch (error) {
         console.error('Error handling starboard reaction:', error);
+        logError('handleStarReaction', error, { 
+            guildId: reaction.message.guild?.id,
+            messageId: reaction.message.id
+        });
     }
 }
 
@@ -6640,14 +6772,17 @@ async function handleStarboardSlash(interaction) {
             const channel = interaction.options.getChannel('channel');
             const newConfig = {
                 channelId: channel.id,
-                threshold: 3
+                threshold: 3,
+                emoji: '⭐'
             };
             
-            try {
-                await DatabaseService.saveStarboardConfig(interaction.guild.id, newConfig);
-            } catch (error) {
-                console.error('Failed to save starboard config to database:', error);
-                // Fallback to in-memory
+            const saveSuccess = await DatabaseService.saveStarboardConfig(interaction.guild.id, newConfig);
+            if (saveSuccess) {
+                // Update in-memory cache
+                starboardConfigs.set(interaction.guild.id, newConfig);
+            } else {
+                console.error('Failed to save starboard config to database');
+                // Still update in-memory for current session
                 starboardConfigs.set(interaction.guild.id, newConfig);
             }
             
@@ -6675,14 +6810,17 @@ async function handleStarboardSlash(interaction) {
                 
                 const autoConfig = {
                     channelId: starboardChannel.id,
-                    threshold: 3
+                    threshold: 3,
+                    emoji: '⭐'
                 };
                 
-                try {
-                    await DatabaseService.saveStarboardConfig(interaction.guild.id, autoConfig);
-                } catch (error) {
-                    console.error('Failed to save auto starboard config to database:', error);
-                    // Fallback to in-memory
+                const autoSaveSuccess = await DatabaseService.saveStarboardConfig(interaction.guild.id, autoConfig);
+                if (autoSaveSuccess) {
+                    // Update in-memory cache
+                    starboardConfigs.set(interaction.guild.id, autoConfig);
+                } else {
+                    console.error('Failed to save auto starboard config to database');
+                    // Still update in-memory for current session
                     starboardConfigs.set(interaction.guild.id, autoConfig);
                 }
                 
@@ -6721,11 +6859,13 @@ async function handleStarboardSlash(interaction) {
             
             config.threshold = threshold;
             
-            try {
-                await DatabaseService.saveStarboardConfig(interaction.guild.id, config);
-            } catch (error) {
-                console.error('Failed to save updated starboard config to database:', error);
-                // Fallback to in-memory
+            const thresholdSaveSuccess = await DatabaseService.saveStarboardConfig(interaction.guild.id, config);
+            if (thresholdSaveSuccess) {
+                // Update in-memory cache
+                starboardConfigs.set(interaction.guild.id, config);
+            } else {
+                console.error('Failed to save updated starboard config to database');
+                // Still update in-memory for current session
                 starboardConfigs.set(interaction.guild.id, config);
             }
             
