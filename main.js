@@ -829,7 +829,8 @@ function isBuiltInCommand(name) {
         'kick', 'ban', 'mute', 'unmute', 'warn', 'quarantine', 'unquarantine', 'clear', 'lock', 'unlock',
         'viewlock', 'viewunlock', 'slowmode', 'ping', 'serverinfo', 'avatar', 'banner',
         'help', 'afk', 'remindme', 'reminders', 'emoji', 'starboard', 'custom',
-        'reminder', 'admin', 'antidoxx', 'undoantidoxx', 'setupmute', 'setupquarantine', 'quarantineinfo'
+        'reminder', 'admin', 'antidoxx', 'undoantidoxx', 'setupmute', 'setupquarantine', 'quarantineinfo',
+        'freezenick', 'unfreezenick', 'afkclear', 'afklist'
     ];
     return builtInCommands.includes(name.toLowerCase());
 }
@@ -4209,6 +4210,7 @@ async function handleFreezeNickCommand(message, args) {
 async function handleUnfreezeNickCommand(message, args) {
     try {
         if (!hasModeratorPermissions(message.member)) {
+            console.log(`[UnfreezeNick] Permission denied for ${message.author.tag}`);
             return message.reply('❌ You need moderator permissions to use this command.');
         }
 
@@ -4219,18 +4221,27 @@ async function handleUnfreezeNickCommand(message, args) {
 
         const reason = args.slice(1).join(' ') || 'No reason provided';
 
+        console.log(`[UnfreezeNick] Attempting to unfreeze ${targetUser.tag} (${targetUser.id}) in guild ${message.guild.id}`);
+
         // Check if nickname is frozen
         const frozenData = await DatabaseService.getFrozenNickname(targetUser.id, message.guild.id);
+        console.log(`[UnfreezeNick] Frozen data:`, frozenData);
+        
         if (!frozenData) {
+            console.log(`[UnfreezeNick] User ${targetUser.tag} is not frozen`);
             return message.reply('❌ This user\'s nickname is not currently frozen.');
         }
 
         // Remove from database
         const success = await DatabaseService.unfreezeNickname(targetUser.id, message.guild.id);
+        console.log(`[UnfreezeNick] Database removal success: ${success}`);
 
         if (!success) {
+            console.log(`[UnfreezeNick] Failed to unfreeze in database`);
             return message.reply('❌ Failed to unfreeze nickname in database.');
         }
+
+        console.log(`[UnfreezeNick] Successfully unfroze ${targetUser.tag}`);
 
         const embed = new EmbedBuilder()
             .setColor('#4ecdc4')
@@ -4267,6 +4278,7 @@ async function handleUnfreezeNickCommand(message, args) {
         }
 
     } catch (error) {
+        console.error('[UnfreezeNick] Error:', error);
         logError('handleUnfreezeNickCommand', error, { guildId: message.guild.id });
         await message.reply('❌ An error occurred while unfreezing the nickname.').catch(() => {});
     }
@@ -4416,6 +4428,7 @@ async function handleUnfreezeNickSlash(interaction) {
     try {
         // Check permissions
         if (!hasModeratorPermissions(interaction.member)) {
+            console.log(`[UnfreezeNick] Permission denied for ${interaction.user.tag}`);
             return interaction.reply({ 
                 embeds: [createErrorEmbed('Permission Denied', 'You need moderator permissions to use this command.')], 
                 flags: MessageFlags.Ephemeral 
@@ -4425,9 +4438,14 @@ async function handleUnfreezeNickSlash(interaction) {
         const targetUser = interaction.options.getUser('user');
         const reason = interaction.options.getString('reason') || 'No reason provided';
 
+        console.log(`[UnfreezeNick] Attempting to unfreeze ${targetUser.tag} (${targetUser.id}) in guild ${interaction.guild.id}`);
+
         // Check if nickname is frozen
         const frozenData = await DatabaseService.getFrozenNickname(targetUser.id, interaction.guild.id);
+        console.log(`[UnfreezeNick] Frozen data:`, frozenData);
+        
         if (!frozenData) {
+            console.log(`[UnfreezeNick] User ${targetUser.tag} is not frozen`);
             return interaction.reply({ 
                 embeds: [createErrorEmbed('Not Frozen', 'This user\'s nickname is not currently frozen.')], 
                 flags: MessageFlags.Ephemeral 
@@ -4436,13 +4454,17 @@ async function handleUnfreezeNickSlash(interaction) {
 
         // Remove from database
         const success = await DatabaseService.unfreezeNickname(targetUser.id, interaction.guild.id);
+        console.log(`[UnfreezeNick] Database removal success: ${success}`);
 
         if (!success) {
+            console.log(`[UnfreezeNick] Failed to unfreeze in database`);
             return interaction.reply({ 
                 embeds: [createErrorEmbed('Database Error', 'Failed to unfreeze nickname in database.')], 
                 flags: MessageFlags.Ephemeral 
             });
         }
+
+        console.log(`[UnfreezeNick] Successfully unfroze ${targetUser.tag}`);
 
         const embed = new EmbedBuilder()
             .setColor('#4ecdc4')

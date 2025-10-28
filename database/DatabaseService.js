@@ -903,10 +903,13 @@ class DatabaseService {
 
     async unfreezeNickname(userId, guildId) {
         try {
-            await FrozenNickname.deleteOne({ userId, guildId });
+            console.log(`[DB] Unfreezing nickname for user ${userId} in guild ${guildId}`);
+            const result = await FrozenNickname.deleteOne({ userId, guildId });
+            console.log(`[DB] Delete result:`, result);
+            console.log(`[DB] Deleted count: ${result.deletedCount}`);
             return true;
         } catch (error) {
-            console.error('Error unfreezing nickname:', error);
+            console.error('[DB] Error unfreezing nickname:', error);
             return false;
         }
     }
