@@ -9,7 +9,8 @@ const {
     GuildSettings, 
     Starboard, 
     AutoReaction,
-    UserAutoReaction 
+    UserAutoReaction,
+    FrozenNickname
 } = require('./models');
 
 class DatabaseService {
@@ -388,6 +389,17 @@ class DatabaseService {
         } catch (error) {
             console.error('Error adding AFK mention:', error);
             return false;
+        }
+    }
+
+    async getGuildAFKUsers(guildId) {
+        try {
+            // Get all AFK users for a specific guild
+            const afkUsers = await AFK.find({ guildId }).lean();
+            return afkUsers || [];
+        } catch (error) {
+            console.error('Error getting guild AFK users:', error);
+            return [];
         }
     }
 
@@ -851,6 +863,62 @@ class DatabaseService {
         };
         
         return health;
+    }
+
+    // FROZEN NICKNAME METHODS
+    async freezeNickname(userId, guildId, frozenNickname, moderatorId, reason = 'No reason provided') {
+        try {
+            const freezeData = {
+                userId,
+                guildId,
+                frozenNickname: frozenNickname || null,
+                moderatorId,
+                reason,
+                active: true,
+                createdAt: new Date()
+            };
+
+            await FrozenNickname.findOneAndUpdate(
+                { userId, guildId },
+                freezeData,
+                { upsert: true, new: true }
+            );
+
+            return true;
+        } catch (error) {
+            console.error('Error freezing nickname:', error);
+            return false;
+        }
+    }
+
+    async getFrozenNickname(userId, guildId) {
+        try {
+            const frozen = await FrozenNickname.findOne({ userId, guildId, active: true }).lean();
+            return frozen;
+        } catch (error) {
+            console.error('Error getting frozen nickname:', error);
+            return null;
+        }
+    }
+
+    async unfreezeNickname(userId, guildId) {
+        try {
+            await FrozenNickname.deleteOne({ userId, guildId });
+            return true;
+        } catch (error) {
+            console.error('Error unfreezing nickname:', error);
+            return false;
+        }
+    }
+
+    async getAllFrozenNicknames(guildId) {
+        try {
+            const frozen = await FrozenNickname.find({ guildId, active: true }).lean();
+            return frozen || [];
+        } catch (error) {
+            console.error('Error getting all frozen nicknames:', error);
+            return [];
+        }
     }
 }
 

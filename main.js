@@ -21,9 +21,9 @@ const client = new Client({
 
 console.log('✅ Client initialized with intents and partials');
 
-// Legacy storage maps (mostly replaced by database, kept for fallback only)
-const afkUsers = new Map(); // DEPRECATED: Use DatabaseService.getUserAFK() instead
-const mentionLogs = new Map(); // DEPRECATED: Stored in AFK schema mentions array
+// Legacy storage maps (FULLY DEPRECATED - all data now in DatabaseService)
+// const afkUsers = new Map(); // REMOVED: Now uses DatabaseService.getUserAFK()
+// const mentionLogs = new Map(); // REMOVED: Stored in AFK schema mentions array
 const starboardConfigs = new Map(); // DEPRECATED: Use DatabaseService.getStarboardConfig() instead
 const customCommands = new Map(); // CACHED: Loaded from database, auto-refreshed
 const reminders = new Map(); // DEPRECATED: Use DatabaseService reminder methods instead
@@ -71,9 +71,7 @@ setInterval(async () => {
             console.log('📊 Performance:', botStats);
             console.log('🗄️ Database:', dbStats);
             
-            // Memory cleanup for legacy Maps (most data is now in database)
-            if (afkUsers.size > 1000) afkUsers.clear(); // Fallback cache cleanup
-            if (mentionLogs.size > 1000) mentionLogs.clear(); // Legacy cleanup
+            // Memory cleanup for legacy Maps (deprecated, data now in database)
             if (antidoxxData.size > 100) antidoxxData.clear(); // Cleanup old antidoxx data
         }
         
@@ -1441,6 +1439,34 @@ const commands = [
                 .setRequired(true)
                 .setMinValue(1)
                 .setMaxValue(100)),
+    
+    new SlashCommandBuilder()
+        .setName('freezenick')
+        .setDescription('Freeze a user\'s nickname to prevent changes')
+        .addUserOption(option => 
+            option.setName('user')
+                .setDescription('User to freeze nickname')
+                .setRequired(true))
+        .addStringOption(option => 
+            option.setName('nickname')
+                .setDescription('Set a specific nickname (leave empty to freeze current)')
+                .setRequired(false))
+        .addStringOption(option => 
+            option.setName('reason')
+                .setDescription('Reason for freezing')
+                .setRequired(false)),
+    
+    new SlashCommandBuilder()
+        .setName('unfreezenick')
+        .setDescription('Unfreeze a user\'s nickname to allow changes')
+        .addUserOption(option => 
+            option.setName('user')
+                .setDescription('User to unfreeze nickname')
+                .setRequired(true))
+        .addStringOption(option => 
+            option.setName('reason')
+                .setDescription('Reason for unfreezing')
+                .setRequired(false)),
                 
     // Channel management
     new SlashCommandBuilder()
@@ -2166,70 +2192,70 @@ client.on('messageCreate', async message => {
     // Check for mentions of AFK users
     if (message.mentions.users.size > 0) {
         for (const [userId, user] of message.mentions.users) {
-            const afkData = await DatabaseService.getUserAFK(userId, message.guild.id);
-            if (afkData) {
-                const timeAway = Date.now() - new Date(afkData.createdAt).getTime();
-                
-                const embed = new EmbedBuilder()
-                    .setColor('#ffa500')
-                    .setTitle('💤 User is AFK')
-                    .setDescription(`**${user.displayName}** is currently AFK`)
-                    .addFields(
-                        { name: '💭 Reason', value: afkData.reason, inline: true },
-                        { name: '⏱️ Away for', value: formatAfkDuration(afkData.timestamp), inline: true },
-                        { name: '📅 Since', value: `<t:${Math.floor(afkData.timestamp / 1000)}:R>`, inline: true }
-                    )
-                    .setThumbnail(user.displayAvatarURL({ dynamic: true }))
-                    .setTimestamp();
-                
-                try {
-                    await message.reply({ embeds: [embed] });
-                } catch (error) {
-                    console.error('Error sending AFK notification:', error);
-                }
-                
-                // Log mention for the AFK user in database
-                const mentionData = {
-                    userId: message.author.id,
-                    username: message.author.displayName,
-                    channelId: message.channel.id,
-                    messageId: message.id,
-                    timestamp: new Date()
-                };
-                
-                await DatabaseService.addAFKMention(userId, message.guild.id, mentionData);
-                
-                // Mentions are now stored in database with automatic cleanup
-                if (mentionLogs.get(userId).length > 50) {
-                    mentionLogs.get(userId).shift(); // Remove oldest mention
-                }
-                
-                // Send DM to AFK user (but not too frequently)
-                const userMentions = mentionLogs.get(userId);
-                const recentMentions = userMentions.filter(m => Date.now() - m.timestamp < 5 * 60 * 1000); // Last 5 minutes
-                
-                // Only send DM for first mention or every 5th mention to avoid spam
-                if (userMentions.length === 1 || userMentions.length % 5 === 0) {
+            try {
+                const afkData = await DatabaseService.getUserAFK(userId, message.guild.id);
+                if (afkData) {
+                    const timeAway = Date.now() - new Date(afkData.createdAt).getTime();
+                    
+                    const embed = new EmbedBuilder()
+                        .setColor('#ffa500')
+                        .setTitle('💤 User is AFK')
+                        .setDescription(`**${user.displayName}** is currently AFK`)
+                        .addFields(
+                            { name: '💭 Reason', value: afkData.reason, inline: true },
+                            { name: '⏱️ Away for', value: formatAfkDuration(new Date(afkData.createdAt).getTime()), inline: true },
+                            { name: '📅 Since', value: `<t:${Math.floor(new Date(afkData.createdAt).getTime() / 1000)}:R>`, inline: true }
+                        )
+                        .setThumbnail(user.displayAvatarURL({ dynamic: true }))
+                        .setTimestamp();
+                    
                     try {
-                        const dmEmbed = new EmbedBuilder()
-                            .setColor('#4ecdc4')
-                            .setTitle('📨 You were mentioned!')
-                            .setDescription(`**${message.author.displayName}** mentioned you in **${message.guild.name}**`)
-                            .addFields(
-                                { name: '📍 Channel', value: `<#${message.channel.id}>`, inline: true },
-                                { name: '📊 Total Mentions', value: `${userMentions.length}`, inline: true },
-                                { name: '🕐 Recent (5m)', value: `${recentMentions.length}`, inline: true },
-                                { name: '💬 Message', value: message.content.substring(0, 1000) || '*No text content*', inline: false },
-                                { name: '🔗 Jump to Message', value: `[Click here](${message.url})`, inline: false }
-                            )
-                            .setFooter({ text: `AFK since ${new Date(afkData.timestamp).toLocaleString()}` })
-                            .setTimestamp();
-                        
-                        await user.send({ embeds: [dmEmbed] });
+                        await message.reply({ embeds: [embed] });
                     } catch (error) {
-                        console.error('Error sending mention DM to AFK user:', error);
+                        logError('AFK mention reply', error, { userId, guildId: message.guild.id });
+                    }
+                    
+                    // Log mention in database
+                    const mentionData = {
+                        userId: message.author.id,
+                        username: message.author.displayName,
+                        channelId: message.channel.id,
+                        messageId: message.id,
+                        timestamp: new Date()
+                    };
+                    
+                    await DatabaseService.addAFKMention(userId, message.guild.id, mentionData);
+                    
+                    // Get updated mention count from database for DM logic
+                    const updatedAfkData = await DatabaseService.getUserAFK(userId, message.guild.id);
+                    const userMentions = updatedAfkData?.mentions || [];
+                    const recentMentions = userMentions.filter(m => Date.now() - new Date(m.timestamp).getTime() < 5 * 60 * 1000); // Last 5 minutes
+                    
+                    // Only send DM for first mention or every 5th mention to avoid spam
+                    if (userMentions.length === 1 || userMentions.length % 5 === 0) {
+                        try {
+                            const dmEmbed = new EmbedBuilder()
+                                .setColor('#4ecdc4')
+                                .setTitle('📨 You were mentioned!')
+                                .setDescription(`**${message.author.displayName}** mentioned you in **${message.guild.name}**`)
+                                .addFields(
+                                    { name: '📍 Channel', value: `<#${message.channel.id}>`, inline: true },
+                                    { name: '📊 Total Mentions', value: `${userMentions.length}`, inline: true },
+                                    { name: '🕐 Recent (5m)', value: `${recentMentions.length}`, inline: true },
+                                    { name: '💬 Message', value: message.content.substring(0, 1000) || '*No text content*', inline: false },
+                                    { name: '🔗 Jump to Message', value: `[Click here](${message.url})`, inline: false }
+                                )
+                                .setFooter({ text: `AFK since ${new Date(afkData.createdAt).toLocaleString()}` })
+                                .setTimestamp();
+                            
+                            await user.send({ embeds: [dmEmbed] });
+                        } catch (error) {
+                            logError('AFK mention DM', error, { userId, guildId: message.guild.id });
+                        }
                     }
                 }
+            } catch (error) {
+                logError('AFK mention processing', error, { userId, guildId: message.guild.id });
             }
         }
     }
@@ -2340,6 +2366,12 @@ client.on('messageCreate', async message => {
                 break;
             case 'clear':
                 await handleClearCommand(message, args);
+                break;
+            case 'freezenick':
+                await handleFreezeNickCommand(message, args);
+                break;
+            case 'unfreezenick':
+                await handleUnfreezeNickCommand(message, args);
                 break;
             case 'lock':
                 await handleLockCommand(message, args);
@@ -2465,6 +2497,12 @@ client.on('interactionCreate', async interaction => {
                 break;
             case 'clear':
                 await handleClearSlash(interaction);
+                break;
+            case 'freezenick':
+                await handleFreezeNickSlash(interaction);
+                break;
+            case 'unfreezenick':
+                await handleUnfreezeNickSlash(interaction);
                 break;
             case 'lock':
                 await handleLockSlash(interaction);
@@ -2672,6 +2710,53 @@ client.on('channelCreate', async (channel) => {
         }
     } catch (error) {
         console.error('Error setting up moderation permissions for new channel:', error);
+    }
+});
+
+// Handle nickname changes to enforce frozen nicknames
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+    try {
+        // Check if nickname changed
+        if (oldMember.nickname === newMember.nickname) {
+            return; // No nickname change
+        }
+
+        // Check if this user's nickname is frozen
+        const frozenData = await DatabaseService.getFrozenNickname(newMember.id, newMember.guild.id);
+        
+        if (frozenData && frozenData.active) {
+            const frozenNickname = frozenData.frozenNickname;
+            
+            // If nickname was changed to something other than frozen nickname, revert it
+            if (newMember.nickname !== frozenNickname) {
+                try {
+                    await newMember.setNickname(frozenNickname, 'Nickname is frozen by moderator');
+                    
+                    // Try to DM the user about the frozen nickname
+                    try {
+                        const dmEmbed = new EmbedBuilder()
+                            .setColor('#ffa500')
+                            .setTitle('🔒 Nickname Change Prevented')
+                            .setDescription(`Your nickname in **${newMember.guild.name}** is currently frozen.`)
+                            .addFields(
+                                { name: '📛 Frozen Nickname', value: frozenNickname, inline: true },
+                                { name: '📝 Reason', value: frozenData.reason || 'No reason provided', inline: false }
+                            )
+                            .setFooter({ text: 'Contact a moderator to unfreeze your nickname.' })
+                            .setTimestamp();
+
+                        await newMember.user.send({ embeds: [dmEmbed] });
+                    } catch (dmError) {
+                        // Silently fail DM if user has DMs disabled
+                        logError('guildMemberUpdate - Frozen nick DM', dmError, { userId: newMember.id });
+                    }
+                } catch (error) {
+                    logError('guildMemberUpdate - Revert nickname', error, { userId: newMember.id, guildId: newMember.guild.id });
+                }
+            }
+        }
+    } catch (error) {
+        logError('guildMemberUpdate', error, { userId: newMember.id, guildId: newMember.guild.id });
     }
 });
 
@@ -4005,6 +4090,188 @@ async function handleClearCommand(message, args) {
     }
 }
 
+async function handleFreezeNickCommand(message, args) {
+    try {
+        if (!hasModeratorPermissions(message.member)) {
+            return message.reply('❌ You need moderator permissions to use this command.');
+        }
+
+        const targetUser = message.mentions.users.first();
+        if (!targetUser) {
+            return message.reply('❌ Please mention a user to freeze their nickname. Usage: `!freezenick @user [nickname] [reason]`');
+        }
+
+        const targetMember = await message.guild.members.fetch(targetUser.id);
+        
+        // Check if bot can manage the target member
+        if (!targetMember.manageable) {
+            return message.reply('❌ I cannot manage this user\'s nickname (they may have a higher role than me).');
+        }
+
+        // Check if target is higher than moderator
+        if (targetMember.roles.highest.position >= message.member.roles.highest.position && message.guild.ownerId !== message.author.id) {
+            return message.reply('❌ You cannot freeze the nickname of someone with equal or higher roles.');
+        }
+
+        // Parse args: first is mention, rest could be nickname or reason
+        const argsWithoutMention = args.slice(1);
+        let customNickname = null;
+        let reason = 'No reason provided';
+
+        // Check if a custom nickname is provided (if starts with quotes or first arg doesn't look like a reason)
+        if (argsWithoutMention.length > 0) {
+            // Simple heuristic: if it doesn't start with common reason words, treat as nickname
+            const potentialNick = argsWithoutMention[0];
+            if (argsWithoutMention.length === 1) {
+                // Single arg could be either nickname or reason
+                customNickname = potentialNick;
+            } else if (potentialNick.length <= 32) {
+                // Likely a nickname if reasonable length
+                customNickname = potentialNick;
+                reason = argsWithoutMention.slice(1).join(' ');
+            } else {
+                // Too long for nickname, treat all as reason
+                reason = argsWithoutMention.join(' ');
+            }
+        }
+
+        // Validate custom nickname length
+        if (customNickname && customNickname.length > 32) {
+            return message.reply('❌ Nicknames must be 32 characters or less.');
+        }
+
+        const nicknameToFreeze = customNickname || targetMember.nickname || targetUser.username;
+
+        // Set the nickname if custom one provided
+        if (customNickname && customNickname !== targetMember.nickname) {
+            try {
+                await targetMember.setNickname(customNickname, `Nickname frozen by ${message.author.tag}: ${reason}`);
+            } catch (error) {
+                logError('handleFreezeNickCommand - setNickname', error, { targetUserId: targetUser.id });
+                return message.reply('❌ Failed to set the nickname. Please check bot permissions.');
+            }
+        }
+
+        // Save to database
+        const success = await DatabaseService.freezeNickname(
+            targetUser.id,
+            message.guild.id,
+            nicknameToFreeze,
+            message.author.id,
+            reason
+        );
+
+        if (!success) {
+            return message.reply('❌ Failed to freeze nickname in database.');
+        }
+
+        const embed = new EmbedBuilder()
+            .setColor('#4ecdc4')
+            .setTitle('🔒 Nickname Frozen')
+            .setDescription(`${targetUser.tag}'s nickname has been frozen`)
+            .addFields(
+                { name: '👤 User', value: `${targetUser} (${targetUser.tag})`, inline: true },
+                { name: '📛 Frozen Nickname', value: nicknameToFreeze, inline: true },
+                { name: '👮 Moderator', value: `${message.author}`, inline: true },
+                { name: '📝 Reason', value: reason, inline: false }
+            )
+            .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
+            .setFooter({ text: `User ID: ${targetUser.id}` })
+            .setTimestamp();
+
+        await message.reply({ embeds: [embed] });
+
+        // Try to DM the user
+        try {
+            const dmEmbed = new EmbedBuilder()
+                .setColor('#ffa500')
+                .setTitle('🔒 Your Nickname Has Been Frozen')
+                .setDescription(`Your nickname in **${message.guild.name}** has been frozen.`)
+                .addFields(
+                    { name: '📛 Frozen Nickname', value: nicknameToFreeze, inline: true },
+                    { name: '👮 Moderator', value: message.author.tag, inline: true },
+                    { name: '📝 Reason', value: reason, inline: false }
+                )
+                .setFooter({ text: 'You cannot change your nickname until a moderator unfreezes it.' })
+                .setTimestamp();
+
+            await targetUser.send({ embeds: [dmEmbed] });
+        } catch (dmError) {
+            logError('handleFreezeNickCommand - DM', dmError, { targetUserId: targetUser.id });
+        }
+
+    } catch (error) {
+        logError('handleFreezeNickCommand', error, { guildId: message.guild.id });
+        await message.reply('❌ An error occurred while freezing the nickname.').catch(() => {});
+    }
+}
+
+async function handleUnfreezeNickCommand(message, args) {
+    try {
+        if (!hasModeratorPermissions(message.member)) {
+            return message.reply('❌ You need moderator permissions to use this command.');
+        }
+
+        const targetUser = message.mentions.users.first();
+        if (!targetUser) {
+            return message.reply('❌ Please mention a user to unfreeze their nickname. Usage: `!unfreezenick @user [reason]`');
+        }
+
+        const reason = args.slice(1).join(' ') || 'No reason provided';
+
+        // Check if nickname is frozen
+        const frozenData = await DatabaseService.getFrozenNickname(targetUser.id, message.guild.id);
+        if (!frozenData) {
+            return message.reply('❌ This user\'s nickname is not currently frozen.');
+        }
+
+        // Remove from database
+        const success = await DatabaseService.unfreezeNickname(targetUser.id, message.guild.id);
+
+        if (!success) {
+            return message.reply('❌ Failed to unfreeze nickname in database.');
+        }
+
+        const embed = new EmbedBuilder()
+            .setColor('#4ecdc4')
+            .setTitle('🔓 Nickname Unfrozen')
+            .setDescription(`${targetUser.tag}'s nickname has been unfrozen`)
+            .addFields(
+                { name: '👤 User', value: `${targetUser} (${targetUser.tag})`, inline: true },
+                { name: '📛 Previous Frozen Nickname', value: frozenData.frozenNickname || 'Current nickname', inline: true },
+                { name: '👮 Moderator', value: `${message.author}`, inline: true },
+                { name: '📝 Reason', value: reason, inline: false }
+            )
+            .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
+            .setFooter({ text: `User ID: ${targetUser.id}` })
+            .setTimestamp();
+
+        await message.reply({ embeds: [embed] });
+
+        // Try to DM the user
+        try {
+            const dmEmbed = new EmbedBuilder()
+                .setColor('#4ecdc4')
+                .setTitle('🔓 Your Nickname Has Been Unfrozen')
+                .setDescription(`Your nickname in **${message.guild.name}** has been unfrozen.`)
+                .addFields(
+                    { name: '👮 Moderator', value: message.author.tag, inline: true },
+                    { name: '📝 Reason', value: reason, inline: false }
+                )
+                .setFooter({ text: 'You can now change your nickname freely.' })
+                .setTimestamp();
+
+            await targetUser.send({ embeds: [dmEmbed] });
+        } catch (dmError) {
+            logError('handleUnfreezeNickCommand - DM', dmError, { targetUserId: targetUser.id });
+        }
+
+    } catch (error) {
+        logError('handleUnfreezeNickCommand', error, { guildId: message.guild.id });
+        await message.reply('❌ An error occurred while unfreezing the nickname.').catch(() => {});
+    }
+}
+
 async function handleClearSlash(interaction) {
     if (!hasModeratorPermissions(interaction.member)) {
         return interaction.reply({ 
@@ -4028,6 +4295,195 @@ async function handleClearSlash(interaction) {
             embeds: [createErrorEmbed('Clear Failed', 'Failed to clear messages. Messages might be too old (older than 14 days).')], 
             flags: MessageFlags.Ephemeral 
         });
+    }
+}
+
+async function handleFreezeNickSlash(interaction) {
+    try {
+        // Check permissions
+        if (!hasModeratorPermissions(interaction.member)) {
+            return interaction.reply({ 
+                embeds: [createErrorEmbed('Permission Denied', 'You need moderator permissions to use this command.')], 
+                flags: MessageFlags.Ephemeral 
+            });
+        }
+
+        const targetUser = interaction.options.getUser('user');
+        const targetMember = await interaction.guild.members.fetch(targetUser.id);
+        const customNickname = interaction.options.getString('nickname');
+        const reason = interaction.options.getString('reason') || 'No reason provided';
+
+        // Check if bot can manage the target member
+        if (!targetMember.manageable) {
+            return interaction.reply({ 
+                embeds: [createErrorEmbed('Permission Error', 'I cannot manage this user\'s nickname (they may have a higher role than me).')], 
+                flags: MessageFlags.Ephemeral 
+            });
+        }
+
+        // Check if target is higher than moderator
+        if (targetMember.roles.highest.position >= interaction.member.roles.highest.position && interaction.guild.ownerId !== interaction.user.id) {
+            return interaction.reply({ 
+                embeds: [createErrorEmbed('Permission Denied', 'You cannot freeze the nickname of someone with equal or higher roles.')], 
+                flags: MessageFlags.Ephemeral 
+            });
+        }
+
+        // Validate custom nickname length
+        if (customNickname && customNickname.length > 32) {
+            return interaction.reply({ 
+                embeds: [createErrorEmbed('Invalid Nickname', 'Nicknames must be 32 characters or less.')], 
+                flags: MessageFlags.Ephemeral 
+            });
+        }
+
+        const nicknameToFreeze = customNickname || targetMember.nickname || targetUser.username;
+
+        // Set the nickname if custom one provided
+        if (customNickname && customNickname !== targetMember.nickname) {
+            try {
+                await targetMember.setNickname(customNickname, `Nickname frozen by ${interaction.user.tag}: ${reason}`);
+            } catch (error) {
+                logError('handleFreezeNickSlash - setNickname', error, { targetUserId: targetUser.id });
+                return interaction.reply({ 
+                    embeds: [createErrorEmbed('Nickname Error', 'Failed to set the nickname. Please check bot permissions.')], 
+                    flags: MessageFlags.Ephemeral 
+                });
+            }
+        }
+
+        // Save to database
+        const success = await DatabaseService.freezeNickname(
+            targetUser.id,
+            interaction.guild.id,
+            nicknameToFreeze,
+            interaction.user.id,
+            reason
+        );
+
+        if (!success) {
+            return interaction.reply({ 
+                embeds: [createErrorEmbed('Database Error', 'Failed to freeze nickname in database.')], 
+                flags: MessageFlags.Ephemeral 
+            });
+        }
+
+        const embed = new EmbedBuilder()
+            .setColor('#4ecdc4')
+            .setTitle('🔒 Nickname Frozen')
+            .setDescription(`${targetUser.tag}'s nickname has been frozen`)
+            .addFields(
+                { name: '👤 User', value: `${targetUser} (${targetUser.tag})`, inline: true },
+                { name: '📛 Frozen Nickname', value: nicknameToFreeze, inline: true },
+                { name: '👮 Moderator', value: `${interaction.user}`, inline: true },
+                { name: '📝 Reason', value: reason, inline: false }
+            )
+            .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
+            .setFooter({ text: `User ID: ${targetUser.id}` })
+            .setTimestamp();
+
+        await interaction.reply({ embeds: [embed] });
+
+        // Try to DM the user
+        try {
+            const dmEmbed = new EmbedBuilder()
+                .setColor('#ffa500')
+                .setTitle('🔒 Your Nickname Has Been Frozen')
+                .setDescription(`Your nickname in **${interaction.guild.name}** has been frozen.`)
+                .addFields(
+                    { name: '📛 Frozen Nickname', value: nicknameToFreeze, inline: true },
+                    { name: '👮 Moderator', value: interaction.user.tag, inline: true },
+                    { name: '📝 Reason', value: reason, inline: false }
+                )
+                .setFooter({ text: 'You cannot change your nickname until a moderator unfreezes it.' })
+                .setTimestamp();
+
+            await targetUser.send({ embeds: [dmEmbed] });
+        } catch (dmError) {
+            logError('handleFreezeNickSlash - DM', dmError, { targetUserId: targetUser.id });
+        }
+
+    } catch (error) {
+        logError('handleFreezeNickSlash', error, { guildId: interaction.guild.id });
+        await interaction.reply({ 
+            embeds: [createErrorEmbed('Error', 'An error occurred while freezing the nickname.')], 
+            flags: MessageFlags.Ephemeral 
+        }).catch(() => {});
+    }
+}
+
+async function handleUnfreezeNickSlash(interaction) {
+    try {
+        // Check permissions
+        if (!hasModeratorPermissions(interaction.member)) {
+            return interaction.reply({ 
+                embeds: [createErrorEmbed('Permission Denied', 'You need moderator permissions to use this command.')], 
+                flags: MessageFlags.Ephemeral 
+            });
+        }
+
+        const targetUser = interaction.options.getUser('user');
+        const reason = interaction.options.getString('reason') || 'No reason provided';
+
+        // Check if nickname is frozen
+        const frozenData = await DatabaseService.getFrozenNickname(targetUser.id, interaction.guild.id);
+        if (!frozenData) {
+            return interaction.reply({ 
+                embeds: [createErrorEmbed('Not Frozen', 'This user\'s nickname is not currently frozen.')], 
+                flags: MessageFlags.Ephemeral 
+            });
+        }
+
+        // Remove from database
+        const success = await DatabaseService.unfreezeNickname(targetUser.id, interaction.guild.id);
+
+        if (!success) {
+            return interaction.reply({ 
+                embeds: [createErrorEmbed('Database Error', 'Failed to unfreeze nickname in database.')], 
+                flags: MessageFlags.Ephemeral 
+            });
+        }
+
+        const embed = new EmbedBuilder()
+            .setColor('#4ecdc4')
+            .setTitle('🔓 Nickname Unfrozen')
+            .setDescription(`${targetUser.tag}'s nickname has been unfrozen`)
+            .addFields(
+                { name: '👤 User', value: `${targetUser} (${targetUser.tag})`, inline: true },
+                { name: '📛 Previous Frozen Nickname', value: frozenData.frozenNickname || 'Current nickname', inline: true },
+                { name: '👮 Moderator', value: `${interaction.user}`, inline: true },
+                { name: '📝 Reason', value: reason, inline: false }
+            )
+            .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
+            .setFooter({ text: `User ID: ${targetUser.id}` })
+            .setTimestamp();
+
+        await interaction.reply({ embeds: [embed] });
+
+        // Try to DM the user
+        try {
+            const dmEmbed = new EmbedBuilder()
+                .setColor('#4ecdc4')
+                .setTitle('🔓 Your Nickname Has Been Unfrozen')
+                .setDescription(`Your nickname in **${interaction.guild.name}** has been unfrozen.`)
+                .addFields(
+                    { name: '👮 Moderator', value: interaction.user.tag, inline: true },
+                    { name: '📝 Reason', value: reason, inline: false }
+                )
+                .setFooter({ text: 'You can now change your nickname freely.' })
+                .setTimestamp();
+
+            await targetUser.send({ embeds: [dmEmbed] });
+        } catch (dmError) {
+            logError('handleUnfreezeNickSlash - DM', dmError, { targetUserId: targetUser.id });
+        }
+
+    } catch (error) {
+        logError('handleUnfreezeNickSlash', error, { guildId: interaction.guild.id });
+        await interaction.reply({ 
+            embeds: [createErrorEmbed('Error', 'An error occurred while unfreezing the nickname.')], 
+            flags: MessageFlags.Ephemeral 
+        }).catch(() => {});
     }
 }
 
@@ -4096,284 +4552,391 @@ function formatUptime(seconds) {
 }
 
 async function handleAfkCommand(message, args) {
-    const reason = args.join(' ') || 'No reason provided';
-    
-    // Check if user is already AFK
-    const currentAfk = await DatabaseService.getUserAFK(message.author.id, message.guild.id);
-    if (currentAfk) {
-        const embed = new EmbedBuilder()
-            .setColor('#ffa500')
-            .setTitle('⚠️ Already AFK')
-            .setDescription(`You're already AFK since <t:${Math.floor(new Date(currentAfk.createdAt).getTime() / 1000)}:R>`)
-            .addFields(
-                { name: 'Current Status', value: currentAfk.reason, inline: true },
-                { name: 'Duration', value: formatAfkDuration(new Date(currentAfk.createdAt).getTime()), inline: true }
-            )
-            .setFooter({ text: 'Use !afkclear to remove AFK status or !afk with new reason to update' });
+    try {
+        const reason = args.join(' ') || 'No reason provided';
         
-        return message.reply({ embeds: [embed] });
+        // Validate reason length
+        if (reason.length > 500) {
+            const embed = createErrorEmbed('Invalid Reason', 'AFK reason must be 500 characters or less.');
+            return message.reply({ embeds: [embed] });
+        }
+        
+        // Sanitize input
+        const sanitizedReason = sanitizeInput(reason);
+        
+        // Check if user is already AFK
+        const currentAfk = await DatabaseService.getUserAFK(message.author.id, message.guild.id);
+        if (currentAfk) {
+            const embed = new EmbedBuilder()
+                .setColor('#ffa500')
+                .setTitle('⚠️ Already AFK')
+                .setDescription(`You're already AFK since <t:${Math.floor(new Date(currentAfk.createdAt).getTime() / 1000)}:R>`)
+                .addFields(
+                    { name: 'Current Status', value: currentAfk.reason, inline: true },
+                    { name: 'Duration', value: formatAfkDuration(new Date(currentAfk.createdAt).getTime()), inline: true }
+                )
+                .setFooter({ text: 'Use !afkclear to remove AFK status or !afk with new reason to update' });
+            
+            return message.reply({ embeds: [embed] });
+        }
+        
+        // Set AFK status in database
+        const success = await DatabaseService.setUserAFK(message.author.id, message.guild.id, sanitizedReason);
+        
+        if (!success) {
+            const embed = createErrorEmbed('Database Error', 'Failed to set AFK status. Please try again.');
+            return message.reply({ embeds: [embed] });
+        }
+        
+        const embed = new EmbedBuilder()
+            .setColor('#4ecdc4')
+            .setTitle('💤 AFK Status Set')
+            .setDescription(`You are now AFK in **${message.guild.name}**`)
+            .addFields(
+                { name: '💭 Reason', value: sanitizedReason, inline: true },
+                { name: '📅 Since', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
+            )
+            .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
+            .setFooter({ text: 'Send any message to clear AFK status | Use !afkclear to manually clear' })
+            .setTimestamp();
+        
+        await message.reply({ embeds: [embed] });
+    } catch (error) {
+        logError('handleAfkCommand', error, { userId: message.author.id, guildId: message.guild.id });
+        const embed = createErrorEmbed('Error', 'An error occurred while setting AFK status.');
+        await message.reply({ embeds: [embed] }).catch(() => {});
     }
-    
-    // Set AFK status in database
-    await DatabaseService.setUserAFK(message.author.id, message.guild.id, reason);
-    
-    const embed = new EmbedBuilder()
-        .setColor('#4ecdc4')
-        .setTitle('💤 AFK Status Set')
-        .setDescription(`You are now AFK in **${message.guild.name}**`)
-        .addFields(
-            { name: '💭 Reason', value: reason, inline: true },
-            { name: '📅 Since', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
-        )
-        .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
-        .setFooter({ text: 'Send any message to clear AFK status | Use !afkclear to manually clear' })
-        .setTimestamp();
-    
-    await message.reply({ embeds: [embed] });
 }
 
 async function handleAfkSlash(interaction) {
-    // Check if this is a subcommand
-    if (interaction.options.getSubcommand) {
-        try {
-            const subcommand = interaction.options.getSubcommand();
-            
-            switch (subcommand) {
-                case 'set':
-                    return await handleAfkSetSlash(interaction);
-                case 'clear':
-                    return await handleAfkClearSlash(interaction);
-                case 'list':
-                    return await handleAfkListSlash(interaction);
-                default:
-                    return interaction.reply({ 
-                        embeds: [createErrorEmbed('Unknown Subcommand', 'Unknown AFK subcommand.')], 
-                        flags: MessageFlags.Ephemeral 
-                    });
+    try {
+        // Check if this is a subcommand
+        if (interaction.options.getSubcommand) {
+            try {
+                const subcommand = interaction.options.getSubcommand();
+                
+                switch (subcommand) {
+                    case 'set':
+                        return await handleAfkSetSlash(interaction);
+                    case 'clear':
+                        return await handleAfkClearSlash(interaction);
+                    case 'list':
+                        return await handleAfkListSlash(interaction);
+                    default:
+                        return interaction.reply({ 
+                            embeds: [createErrorEmbed('Unknown Subcommand', 'Unknown AFK subcommand.')], 
+                            flags: MessageFlags.Ephemeral 
+                        });
+                }
+            } catch (error) {
+                // No subcommand, treat as regular AFK set
             }
-        } catch (error) {
-            // No subcommand, treat as regular AFK set
         }
+        
+        // Default behavior - set AFK status
+        return await handleAfkSetSlash(interaction);
+    } catch (error) {
+        logError('handleAfkSlash', error, { userId: interaction.user.id, guildId: interaction.guild.id });
+        const embed = createErrorEmbed('Error', 'An error occurred while processing the AFK command.');
+        await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral }).catch(() => {});
     }
-    
-    // Default behavior - set AFK status
-    return await handleAfkSetSlash(interaction);
 }
 
 async function handleAfkSetSlash(interaction) {
-    const reason = interaction.options.getString('reason') || 'No reason provided';
-    
-    // Check if user is already AFK
-    if (afkUsers.has(interaction.user.id)) {
-        const currentAfk = afkUsers.get(interaction.user.id);
-        const embed = new EmbedBuilder()
-            .setColor('#ffa500')
-            .setTitle('⚠️ Already AFK')
-            .setDescription(`You're already AFK since <t:${Math.floor(currentAfk.timestamp / 1000)}:R>`)
-            .addFields(
-                { name: 'Current Status', value: currentAfk.reason, inline: true },
-                { name: 'Duration', value: formatAfkDuration(currentAfk.timestamp), inline: true }
-            )
-            .setFooter({ text: 'Use /afk clear to remove AFK status or /afk with new reason to update' });
+    try {
+        const reason = interaction.options.getString('reason') || 'No reason provided';
         
-        return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        // Validate reason length
+        if (reason.length > 500) {
+            const embed = createErrorEmbed('Invalid Reason', 'AFK reason must be 500 characters or less.');
+            return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        }
+        
+        // Sanitize input
+        const sanitizedReason = sanitizeInput(reason);
+        
+        // Check if user is already AFK using DatabaseService
+        const currentAfk = await DatabaseService.getUserAFK(interaction.user.id, interaction.guild.id);
+        if (currentAfk) {
+            const embed = new EmbedBuilder()
+                .setColor('#ffa500')
+                .setTitle('⚠️ Already AFK')
+                .setDescription(`You're already AFK since <t:${Math.floor(new Date(currentAfk.createdAt).getTime() / 1000)}:R>`)
+                .addFields(
+                    { name: 'Current Status', value: currentAfk.reason, inline: true },
+                    { name: 'Duration', value: formatAfkDuration(new Date(currentAfk.createdAt).getTime()), inline: true }
+                )
+                .setFooter({ text: 'Use /afk clear to remove AFK status or set a new reason to update' });
+            
+            return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        }
+        
+        // Set AFK status in database
+        const success = await DatabaseService.setUserAFK(interaction.user.id, interaction.guild.id, sanitizedReason);
+        
+        if (!success) {
+            const embed = createErrorEmbed('Database Error', 'Failed to set AFK status. Please try again.');
+            return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        }
+        
+        const embed = new EmbedBuilder()
+            .setColor('#4ecdc4')
+            .setTitle('💤 AFK Status Set')
+            .setDescription(`You are now AFK in **${interaction.guild.name}**`)
+            .addFields(
+                { name: '💭 Reason', value: sanitizedReason, inline: true },
+                { name: '📅 Since', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
+            )
+            .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
+            .setFooter({ text: 'Send any message to clear AFK status | Use /afk clear to manually clear' })
+            .setTimestamp();
+        
+        await interaction.reply({ embeds: [embed] });
+    } catch (error) {
+        logError('handleAfkSetSlash', error, { userId: interaction.user.id, guildId: interaction.guild.id });
+        const embed = createErrorEmbed('Error', 'An error occurred while setting AFK status.');
+        await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral }).catch(() => {});
     }
-    
-    // Set AFK status
-    const afkData = {
-        reason: reason,
-        timestamp: Date.now(),
-        guildId: interaction.guild.id,
-        mentions: []
-    };
-    
-    afkUsers.set(interaction.user.id, afkData);
-    // Data automatically saved to database
-    
-    const embed = new EmbedBuilder()
-        .setColor('#4ecdc4')
-        .setTitle('💤 AFK Status Set')
-        .setDescription(`You are now AFK in **${interaction.guild.name}**`)
-        .addFields(
-            { name: '💭 Reason', value: reason, inline: true },
-            { name: '📅 Since', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
-        )
-        .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
-        .setFooter({ text: 'Send any message to clear AFK status | Use /afk clear to manually clear' })
-        .setTimestamp();
-    
-    await interaction.reply({ embeds: [embed] });
 }
 
 async function handleAfkClearSlash(interaction) {
-    const afkData = await DatabaseService.getUserAFK(interaction.user.id, interaction.guild.id);
-    if (!afkData) {
-        const embed = new EmbedBuilder()
-            .setColor('#ffa500')
-            .setDescription('❌ You are not currently AFK.');
+    try {
+        const afkData = await DatabaseService.getUserAFK(interaction.user.id, interaction.guild.id);
+        if (!afkData) {
+            const embed = new EmbedBuilder()
+                .setColor('#ffa500')
+                .setDescription('❌ You are not currently AFK.');
+            
+            return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        }
         
-        return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        const success = await DatabaseService.removeUserAFK(interaction.user.id, interaction.guild.id);
+        
+        if (!success) {
+            const embed = createErrorEmbed('Database Error', 'Failed to clear AFK status. Please try again.');
+            return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        }
+        
+        const embed = new EmbedBuilder()
+            .setColor('#4ecdc4')
+            .setTitle('✅ AFK Status Cleared')
+            .setDescription('Your AFK status has been manually removed')
+            .addFields(
+                { name: 'Previous Status', value: afkData.reason, inline: true },
+                { name: 'Total AFK Time', value: formatAfkDuration(new Date(afkData.createdAt).getTime()), inline: true }
+            )
+            .setTimestamp();
+        
+        // Check for missed mentions from database
+        const userMentions = afkData.mentions || [];
+        if (userMentions.length > 0) {
+            embed.addFields({ name: '📨 Missed Mentions', value: `${userMentions.length} mention(s) while away`, inline: true });
+            embed.setFooter({ text: 'Check your DMs for missed mentions summary' });
+            
+            // Send missed mentions DM
+            try {
+                const mentionEmbed = new EmbedBuilder()
+                    .setColor('#4ecdc4')
+                    .setTitle('📨 Missed Mentions While AFK')
+                    .setDescription(`You had **${userMentions.length}** mention(s) while away:`)
+                    .setFooter({ text: `Total AFK time: ${formatAfkDuration(new Date(afkData.createdAt).getTime())}` });
+                
+                userMentions.slice(0, 10).forEach((mention, index) => {
+                    mentionEmbed.addFields({
+                        name: `${index + 1}. ${mention.username}`,
+                        value: `<#${mention.channelId}> - <t:${Math.floor(new Date(mention.timestamp).getTime() / 1000)}:R>`,
+                        inline: false
+                    });
+                });
+                
+                if (userMentions.length > 10) {
+                    mentionEmbed.setFooter({ text: `And ${userMentions.length - 10} more mentions...` });
+                }
+                
+                await interaction.user.send({ embeds: [mentionEmbed] });
+            } catch (dmError) {
+                logError('handleAfkClearSlash DM', dmError, { userId: interaction.user.id });
+            }
+        }
+        
+        await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    } catch (error) {
+        logError('handleAfkClearSlash', error, { userId: interaction.user.id, guildId: interaction.guild.id });
+        const embed = createErrorEmbed('Error', 'An error occurred while clearing AFK status.');
+        await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral }).catch(() => {});
     }
-    
-    await DatabaseService.removeUserAFK(interaction.user.id, interaction.guild.id);
-    clearAfkTimeout(interaction.user.id);
-    
-    const embed = new EmbedBuilder()
-        .setColor('#4ecdc4')
-        .setTitle('✅ AFK Status Cleared')
-        .setDescription('Your AFK status has been manually removed')
-        .addFields(
-            { name: 'Previous Status', value: afkData.reason, inline: true },
-            { name: 'Total AFK Time', value: formatAfkDuration(afkData.timestamp), inline: true }
-        )
-        .setTimestamp();
-    
-    // Check for missed mentions
-    const userMentions = mentionLogs.get(interaction.user.id) || [];
-    if (userMentions.length > 0) {
-        embed.addFields({ name: '📨 Missed Mentions', value: `${userMentions.length} mention(s) while away`, inline: true });
-        embed.setFooter({ text: 'Check your DMs for missed mentions summary' });
-    }
-    
-    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
 }
 
 async function handleAfkListSlash(interaction) {
-    const guildAfkUsers = [];
-    
-    // Filter AFK users who are in this guild
-    for (const [userId, afkData] of afkUsers.entries()) {
-        try {
-            const member = await interaction.guild.members.fetch(userId);
-            if (member) {
-                guildAfkUsers.push({
-                    user: member.user,
-                    ...afkData
-                });
-            }
-        } catch (error) {
-            // User not in guild, skip
-            continue;
+    try {
+        // Get all AFK users from database for this guild
+        const guildAfkUsers = await DatabaseService.getGuildAFKUsers(interaction.guild.id);
+        
+        if (guildAfkUsers.length === 0) {
+            const embed = new EmbedBuilder()
+                .setColor('#4ecdc4')
+                .setDescription('✨ No one is currently AFK in this server.')
+                .setTimestamp();
+            
+            return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
         }
-    }
-    
-    if (guildAfkUsers.length === 0) {
+        
+        // Sort by AFK duration (longest first)
+        guildAfkUsers.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        
         const embed = new EmbedBuilder()
-            .setColor('#4ecdc4')
-            .setDescription('✨ No one is currently AFK in this server.')
+            .setColor('#ffa500')
+            .setTitle('💤 Currently AFK Users')
+            .setDescription(`${guildAfkUsers.length} user(s) are currently AFK in this server:`)
             .setTimestamp();
         
-        return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        // Fetch user details and add to embed
+        for (let i = 0; i < Math.min(guildAfkUsers.length, 10); i++) {
+            const afkUser = guildAfkUsers[i];
+            try {
+                const member = await interaction.guild.members.fetch(afkUser.userId);
+                const mentions = afkUser.mentions || [];
+                embed.addFields({
+                    name: `${i + 1}. ${member.user.displayName}`,
+                    value: `**Status:** ${afkUser.reason}\n**Away for:** ${formatAfkDuration(new Date(afkUser.createdAt).getTime())}\n**Mentions:** ${mentions.length}`,
+                    inline: true
+                });
+            } catch (error) {
+                // User not in guild or fetch failed, skip
+                logError('handleAfkListSlash member fetch', error, { userId: afkUser.userId });
+            }
+        }
+        
+        if (guildAfkUsers.length > 10) {
+            embed.setFooter({ text: `And ${guildAfkUsers.length - 10} more AFK users...` });
+        }
+        
+        await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    } catch (error) {
+        logError('handleAfkListSlash', error, { guildId: interaction.guild.id });
+        const embed = createErrorEmbed('Error', 'An error occurred while fetching AFK users.');
+        await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral }).catch(() => {});
     }
-    
-    // Sort by AFK duration (longest first)
-    guildAfkUsers.sort((a, b) => a.timestamp - b.timestamp);
-    
-    const embed = new EmbedBuilder()
-        .setColor('#ffa500')
-        .setTitle('💤 Currently AFK Users')
-        .setDescription(`${guildAfkUsers.length} user(s) are currently AFK in this server:`)
-        .setTimestamp();
-    
-    guildAfkUsers.slice(0, 10).forEach((afkUser, index) => {
-        const mentions = mentionLogs.get(afkUser.user.id) || [];
-        embed.addFields({
-            name: `${index + 1}. ${afkUser.user.displayName}`,
-            value: `**Status:** ${afkUser.reason}\n**Away for:** ${formatAfkDuration(afkUser.timestamp)}\n**Mentions:** ${mentions.length}`,
-            inline: true
-        });
-    });
-    
-    if (guildAfkUsers.length > 10) {
-        embed.setFooter({ text: `And ${guildAfkUsers.length - 10} more AFK users...` });
-    }
-    
-    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
 }
 
 async function handleAfkClearCommand(message) {
-    const afkData = await DatabaseService.getUserAFK(message.author.id, message.guild.id);
-    if (!afkData) {
-        const embed = new EmbedBuilder()
-            .setColor('#ffa500')
-            .setDescription('❌ You are not currently AFK.');
+    try {
+        const afkData = await DatabaseService.getUserAFK(message.author.id, message.guild.id);
+        if (!afkData) {
+            const embed = new EmbedBuilder()
+                .setColor('#ffa500')
+                .setDescription('❌ You are not currently AFK.');
+            
+            return message.reply({ embeds: [embed] });
+        }
         
-        return message.reply({ embeds: [embed] });
+        const success = await DatabaseService.removeUserAFK(message.author.id, message.guild.id);
+        
+        if (!success) {
+            const embed = createErrorEmbed('Database Error', 'Failed to clear AFK status. Please try again.');
+            return message.reply({ embeds: [embed] });
+        }
+        
+        const embed = new EmbedBuilder()
+            .setColor('#4ecdc4')
+            .setTitle('✅ AFK Status Cleared')
+            .setDescription('Your AFK status has been manually removed')
+            .addFields(
+                { name: 'Previous Status', value: afkData.reason, inline: true },
+                { name: 'Total AFK Time', value: formatAfkDuration(new Date(afkData.createdAt).getTime()), inline: true }
+            )
+            .setTimestamp();
+        
+        // Check for missed mentions from database
+        const userMentions = afkData.mentions || [];
+        if (userMentions.length > 0) {
+            embed.addFields({ name: '📨 Missed Mentions', value: `${userMentions.length} mention(s) while away`, inline: true });
+            embed.setFooter({ text: 'Check your DMs for missed mentions summary' });
+            
+            // Send missed mentions DM
+            try {
+                const mentionEmbed = new EmbedBuilder()
+                    .setColor('#4ecdc4')
+                    .setTitle('📨 Missed Mentions While AFK')
+                    .setDescription(`You had **${userMentions.length}** mention(s) while away:`)
+                    .setFooter({ text: `Total AFK time: ${formatAfkDuration(new Date(afkData.createdAt).getTime())}` });
+                
+                userMentions.slice(0, 10).forEach((mention, index) => {
+                    mentionEmbed.addFields({
+                        name: `${index + 1}. ${mention.username}`,
+                        value: `<#${mention.channelId}> - <t:${Math.floor(new Date(mention.timestamp).getTime() / 1000)}:R>`,
+                        inline: false
+                    });
+                });
+                
+                if (userMentions.length > 10) {
+                    mentionEmbed.setFooter({ text: `And ${userMentions.length - 10} more mentions...` });
+                }
+                
+                await message.author.send({ embeds: [mentionEmbed] });
+            } catch (dmError) {
+                logError('handleAfkClearCommand DM', dmError, { userId: message.author.id });
+            }
+        }
+        
+        await message.reply({ embeds: [embed] });
+    } catch (error) {
+        logError('handleAfkClearCommand', error, { userId: message.author.id, guildId: message.guild.id });
+        const embed = createErrorEmbed('Error', 'An error occurred while clearing AFK status.');
+        await message.reply({ embeds: [embed] }).catch(() => {});
     }
-    
-    await DatabaseService.removeUserAFK(message.author.id, message.guild.id);
-    
-    const embed = new EmbedBuilder()
-        .setColor('#4ecdc4')
-        .setTitle('✅ AFK Status Cleared')
-        .setDescription('Your AFK status has been manually removed')
-        .addFields(
-            { name: 'Previous Status', value: afkData.reason, inline: true },
-            { name: 'Total AFK Time', value: formatAfkDuration(afkData.timestamp), inline: true }
-        )
-        .setTimestamp();
-    
-    // Check for missed mentions
-    const userMentions = mentionLogs.get(message.author.id) || [];
-    if (userMentions.length > 0) {
-        embed.addFields({ name: '📨 Missed Mentions', value: `${userMentions.length} mention(s) while away`, inline: true });
-        embed.setFooter({ text: 'Check your DMs for missed mentions summary' });
-    }
-    
-    await message.reply({ embeds: [embed] });
 }
 
 async function handleAfkListCommand(message) {
-    const guildAfkUsers = [];
-    
-    // Filter AFK users who are in this guild
-    for (const [userId, afkData] of afkUsers.entries()) {
-        try {
-            const member = await message.guild.members.fetch(userId);
-            if (member) {
-                guildAfkUsers.push({
-                    user: member.user,
-                    ...afkData
-                });
-            }
-        } catch (error) {
-            // User not in guild, skip
-            continue;
+    try {
+        // Get all AFK users from database for this guild
+        const guildAfkUsers = await DatabaseService.getGuildAFKUsers(message.guild.id);
+        
+        if (guildAfkUsers.length === 0) {
+            const embed = new EmbedBuilder()
+                .setColor('#4ecdc4')
+                .setDescription('✨ No one is currently AFK in this server.')
+                .setTimestamp();
+            
+            return message.reply({ embeds: [embed] });
         }
-    }
-    
-    if (guildAfkUsers.length === 0) {
+        
+        // Sort by AFK duration (longest first)
+        guildAfkUsers.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        
         const embed = new EmbedBuilder()
-            .setColor('#4ecdc4')
-            .setDescription('✨ No one is currently AFK in this server.')
+            .setColor('#ffa500')
+            .setTitle('💤 Currently AFK Users')
+            .setDescription(`${guildAfkUsers.length} user(s) are currently AFK in this server:`)
             .setTimestamp();
         
-        return message.reply({ embeds: [embed] });
+        // Fetch user details and add to embed
+        for (let i = 0; i < Math.min(guildAfkUsers.length, 10); i++) {
+            const afkUser = guildAfkUsers[i];
+            try {
+                const member = await message.guild.members.fetch(afkUser.userId);
+                const mentions = afkUser.mentions || [];
+                embed.addFields({
+                    name: `${i + 1}. ${member.user.displayName}`,
+                    value: `**Status:** ${afkUser.reason}\n**Away for:** ${formatAfkDuration(new Date(afkUser.createdAt).getTime())}\n**Mentions:** ${mentions.length}`,
+                    inline: true
+                });
+            } catch (error) {
+                // User not in guild or fetch failed, skip
+                logError('handleAfkListCommand member fetch', error, { userId: afkUser.userId });
+            }
+        }
+        
+        if (guildAfkUsers.length > 10) {
+            embed.setFooter({ text: `And ${guildAfkUsers.length - 10} more AFK users...` });
+        }
+        
+        await message.reply({ embeds: [embed] });
+    } catch (error) {
+        logError('handleAfkListCommand', error, { guildId: message.guild.id });
+        const embed = createErrorEmbed('Error', 'An error occurred while fetching AFK users.');
+        await message.reply({ embeds: [embed] }).catch(() => {});
     }
-    
-    // Sort by AFK duration (longest first)
-    guildAfkUsers.sort((a, b) => a.timestamp - b.timestamp);
-    
-    const embed = new EmbedBuilder()
-        .setColor('#ffa500')
-        .setTitle('💤 Currently AFK Users')
-        .setDescription(`${guildAfkUsers.length} user(s) are currently AFK in this server:`)
-        .setTimestamp();
-    
-    guildAfkUsers.slice(0, 10).forEach((afkUser, index) => {
-        const mentions = mentionLogs.get(afkUser.user.id) || [];
-        embed.addFields({
-            name: `${index + 1}. ${afkUser.user.displayName}`,
-            value: `**Status:** ${afkUser.reason}\n**Away for:** ${formatAfkDuration(afkUser.timestamp)}\n**Mentions:** ${mentions.length}`,
-            inline: true
-        });
-    });
-    
-    if (guildAfkUsers.length > 10) {
-        embed.setFooter({ text: `And ${guildAfkUsers.length - 10} more AFK users...` });
-    }
-    
-    await message.reply({ embeds: [embed] });
 }
 
 async function handleServerInfoCommand(message) {
@@ -5830,7 +6393,7 @@ async function handleHelpCommand(message) {
         .addFields(
             {
                 name: '🔨 Moderation Commands',
-                value: '`!kick @user [reason]` - Kick a user\n`!ban @user [reason]` - Ban a user\n`!mute @user <duration> [reason]` - Mute a user\n`!unmute @user` - Unmute a user\n`!warn @user [reason]` - Warn a user\n`!quarantine @user [reason]` - Remove channel access\n`!unquarantine @user [reason]` - Restore channel access\n`!quarantineinfo` - View quarantine records\n`!clear <amount>` - Delete messages',
+                value: '`!kick @user [reason]` - Kick a user\n`!ban @user [reason]` - Ban a user\n`!mute @user <duration> [reason]` - Mute a user\n`!unmute @user` - Unmute a user\n`!warn @user [reason]` - Warn a user\n`!quarantine @user [reason]` - Remove channel access\n`!unquarantine @user [reason]` - Restore channel access\n`!quarantineinfo` - View quarantine records\n`!clear <amount>` - Delete messages\n`!freezenick @user [nickname] [reason]` - Freeze nickname\n`!unfreezenick @user [reason]` - Unfreeze nickname',
                 inline: false
             },
             {
@@ -5839,12 +6402,12 @@ async function handleHelpCommand(message) {
                 inline: false
             },
             {
-                name: '� Setup Commands (Moderators)',
+                name: '⚙️ Setup Commands (Moderators)',
                 value: '`!setupmute` - Setup muted role permissions\n`!setupquarantine` - Setup quarantine system',
                 inline: false
             },
             {
-                name: '�🛠️ Utility Commands',
+                name: '🛠️ Utility Commands',
                 value: '`!ping` - Check bot latency\n`!serverinfo` - Show server info\n`!avatar [@user]` - Show user avatar\n`!banner [@user]` - Show user banner\n`!afk [reason]` - Set AFK status\n`!help` - Show this help',
                 inline: false
             },
@@ -5928,7 +6491,7 @@ async function handleHelpSlash(interaction) {
     if (isModerator) {
         embed.addFields({
             name: '🔨 Moderation Commands',
-            value: '`/kick user [reason]` - Kick a user\n`/ban user [reason]` - Ban a user\n`/mute user duration [reason]` - Mute a user\n`/unmute user` - Unmute a user\n`/warn user [reason]` - Warn a user\n`/quarantine user [reason]` - Remove channel access\n`/unquarantine user [reason]` - Restore channel access\n`/quarantineinfo` - View quarantine records\n`/clear amount` - Delete messages',
+            value: '`/kick user [reason]` - Kick a user\n`/ban user [reason]` - Ban a user\n`/mute user duration [reason]` - Mute a user\n`/unmute user` - Unmute a user\n`/warn user [reason]` - Warn a user\n`/quarantine user [reason]` - Remove channel access\n`/unquarantine user [reason]` - Restore channel access\n`/quarantineinfo` - View quarantine records\n`/clear amount` - Delete messages\n`/freezenick user [nickname] [reason]` - Freeze nickname\n`/unfreezenick user [reason]` - Unfreeze nickname',
             inline: false
         });
         

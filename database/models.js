@@ -168,6 +168,22 @@ const userAutoReactionSchema = new mongoose.Schema({
 
 userAutoReactionSchema.index({ guildId: 1, userId: 1 }, { unique: true });
 
+// Frozen Nickname Schema
+const frozenNicknameSchema = new mongoose.Schema({
+    userId: { type: String, required: true },
+    guildId: { type: String, required: true },
+    frozenNickname: { type: String, default: null }, // null means freeze current nickname
+    moderatorId: { type: String, required: true },
+    reason: { type: String, default: 'No reason provided' },
+    active: { type: Boolean, default: true },
+    createdAt: { type: Date, default: Date.now }
+}, {
+    timestamps: true
+});
+
+frozenNicknameSchema.index({ userId: 1, guildId: 1 }, { unique: true });
+frozenNicknameSchema.index({ guildId: 1, active: 1 });
+
 // Create and export models
 const User = mongoose.model('User', userSchema);
 const CustomCommand = mongoose.model('CustomCommand', customCommandSchema);
@@ -178,6 +194,7 @@ const GuildSettings = mongoose.model('GuildSettings', guildSettingsSchema);
 const Starboard = mongoose.model('Starboard', starboardSchema);
 const AutoReaction = mongoose.model('AutoReaction', autoReactionSchema);
 const UserAutoReaction = mongoose.model('UserAutoReaction', userAutoReactionSchema);
+const FrozenNickname = mongoose.model('FrozenNickname', frozenNicknameSchema);
 
 module.exports = {
     User,
@@ -188,5 +205,6 @@ module.exports = {
     GuildSettings,
     Starboard,
     AutoReaction,
-    UserAutoReaction
+    UserAutoReaction,
+    FrozenNickname
 };
