@@ -199,6 +199,19 @@ class RedisCache {
         return await this.del(`guild_settings:${guildId}`);
     }
 
+    // Starboard Config Cache
+    async getStarboardConfig(guildId) {
+        return await this.get(`starboard:config:${guildId}`);
+    }
+
+    async setStarboardConfig(guildId, config) {
+        return await this.set(`starboard:config:${guildId}`, config, 3600); // 1 hour TTL
+    }
+
+    async removeStarboardConfig(guildId) {
+        return await this.del(`starboard:config:${guildId}`);
+    }
+
     // Quarantine Records Cache (for active quarantines)
     async getActiveQuarantine(userId, guildId) {
         return await this.get(`quarantine:${guildId}:${userId}`);

@@ -625,7 +625,7 @@ class DatabaseService {
             
             // Invalidate cache
             if (this.isRedisAvailable()) {
-                await this.redis.client.del(`starboard:${guildId}`);
+                await this.redis.removeStarboardConfig(guildId);
             }
             
             return true;
@@ -712,7 +712,11 @@ class DatabaseService {
         try {
             await Starboard.findOneAndUpdate(
                 { guildId, messageId: originalMessageId },
-                { starboardMessageId },
+                { 
+                    guildId,
+                    messageId: originalMessageId,
+                    starboardMessageId 
+                },
                 { upsert: true }
             );
             return true;

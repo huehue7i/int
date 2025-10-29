@@ -719,10 +719,27 @@ function getVerificationLevel(level) {
 
 async function getStarboardConfig(guildId) {
     try {
+        // Check memory cache first
+        if (starboardConfigs.has(guildId)) {
+            return starboardConfigs.get(guildId);
+        }
+        
+        // Fetch from database if not in cache
         const config = await DatabaseService.getStarboardConfig(guildId);
-        return config;
+        if (config) {
+            // Cache it for future use
+            const cacheConfig = {
+                channelId: config.channelId,
+                threshold: config.threshold || 3,
+                emoji: config.emoji || '⭐'
+            };
+            starboardConfigs.set(guildId, cacheConfig);
+            return cacheConfig;
+        }
+        
+        return null;
     } catch (error) {
-        console.error('Failed to get starboard config from database:', error);
+        console.error('[Starboard] Failed to get starboard config:', error);
         // Fallback to in-memory
         return starboardConfigs.get(guildId) || null;
     }
@@ -1607,7 +1624,13 @@ const commands = [
                 .addChannelOption(option =>
                     option.setName('channel')
                         .setDescription('Channel for starboard')
-                        .setRequired(true)))
+                        .setRequired(true))
+                .addIntegerOption(option =>
+                    option.setName('threshold')
+                        .setDescription('Number of stars required (default: 3)')
+                        .setRequired(false)
+                        .setMinValue(1)
+                        .setMaxValue(50)))
         .addSubcommand(subcommand =>
             subcommand
                 .setName('auto-setup')
@@ -2707,12 +2730,26 @@ client.on('messageReactionRemove', async (reaction, user) => {
 // Handle message deletion to clean up starboard
 client.on('messageDelete', async (message) => {
     try {
+        // Handle partial messages
+        if (message.partial) {
+            try {
+                await message.fetch();
+            } catch (error) {
+                console.log('[Starboard] Could not fetch partial deleted message, using cached data');
+            }
+        }
+
         // Check if this message was on the starboard
         if (starboardMessages.has(message.id)) {
             const starboardMessageId = starboardMessages.get(message.id);
-            const config = starboardConfigs.get(message.guild.id);
             
-            if (config && config.channelId) {
+            // Get config from memory or database
+            let config = starboardConfigs.get(message.guild?.id);
+            if (!config && message.guild) {
+                config = await getStarboardConfig(message.guild.id);
+            }
+            
+            if (config && config.channelId && message.guild) {
                 try {
                     const starboardChannel = await message.guild.channels.fetch(config.channelId);
                     if (starboardChannel) {
@@ -2720,19 +2757,22 @@ client.on('messageDelete', async (message) => {
                         const starboardMsg = await starboardChannel.messages.fetch(starboardMessageId).catch(() => null);
                         if (starboardMsg) {
                             await starboardMsg.delete();
+                            console.log(`[Starboard] Deleted starboard message for deleted original message ${message.id}`);
                         }
                     }
                 } catch (error) {
-                    console.error('Error deleting starboard message:', error);
+                    console.error('[Starboard] Error deleting starboard message:', error);
                 }
             }
             
             // Remove from tracking
             starboardMessages.delete(message.id);
-            await DatabaseService.deleteStarboardMessage(message.guild.id, message.id);
+            if (message.guild) {
+                await DatabaseService.deleteStarboardMessage(message.guild.id, message.id);
+            }
         }
     } catch (error) {
-        console.error('Error in messageDelete handler:', error);
+        console.error('[Starboard] Error in messageDelete handler:', error);
     }
 });
 
@@ -6654,7 +6694,7 @@ async function handleHelpSlash(interaction) {
     
     embed.addFields({
         name: '⭐ Additional Features',
-        value: '• **Starboard** - React with ⭐ to star messages\n• **AFK System** - Automatic AFK tracking and notifications\n• **Custom Commands** - Server-specific commands',
+        value: `• **Starboard** - React with ⭐ to star messages${isBotOwner ? ' (Bot owners can bypass all rules!)' : ''}\n• **AFK System** - Automatic AFK tracking and notifications\n• **Custom Commands** - Server-specific commands`,
         inline: false
     });
     
@@ -6666,85 +6706,191 @@ async function handleHelpSlash(interaction) {
 // Starboard reaction handler
 async function handleStarReaction(reaction, user, action) {
     try {
-        const config = starboardConfigs.get(reaction.message.guild.id);
-        if (!config) return;
+        const message = reaction.message;
+        const config = starboardConfigs.get(message.guild.id);
         
-        // Check if message author exists
-        if (!reaction.message.author) {
-            console.log('Starboard: Message author not available');
-            return;
+        if (!config || !config.channelId) {
+            return; // Starboard not configured
         }
         
-        // Don't allow users to star their own messages
-        if (reaction.message.author.id === user.id) {
+        // Check if message author exists
+        if (!message.author) {
+            console.log('[Starboard] Message author not available');
+            return;
+        }
+
+        // Check if user is bot owner
+        const isOwner = isBotOwner(user.id);
+        
+        // Bot owner bypass: Allow starring any message including own, ignores threshold
+        if (isOwner) {
+            console.log('[Starboard] Bot owner starred message - bypassing all rules');
+            
+            // Get starboard channel
+            const starboardChannel = message.guild.channels.cache.get(config.channelId);
+            if (!starboardChannel) {
+                console.error('[Starboard] Starboard channel not found:', config.channelId);
+                return;
+            }
+
+            // Verify bot can send messages
+            const botPermissions = starboardChannel.permissionsFor(message.guild.members.me);
+            if (!botPermissions || !botPermissions.has(['SendMessages', 'EmbedLinks'])) {
+                console.error('[Starboard] Bot lacks permissions in starboard channel');
+                return;
+            }
+
+            // Check if message already on starboard
+            const existingStarboardMessageId = starboardMessages.get(message.id);
+            
+            if (!existingStarboardMessageId) {
+                // Create starboard message immediately
+                const embed = new EmbedBuilder()
+                    .setColor('#FFD700')
+                    .setAuthor({ 
+                        name: message.author.tag || 'Unknown User',
+                        iconURL: message.author.displayAvatarURL() || undefined
+                    })
+                    .setDescription(message.content || '*[No text content]*')
+                    .addFields({ 
+                        name: 'Source', 
+                        value: `[Jump to Message](${message.url})`,
+                        inline: true
+                    })
+                    .setTimestamp(message.createdAt)
+                    .setFooter({ text: `⭐ Bot Owner Featured | Message ID: ${message.id}` });
+
+                // Add image if present
+                if (message.attachments.size > 0) {
+                    const attachment = message.attachments.first();
+                    if (attachment.contentType?.startsWith('image/')) {
+                        embed.setImage(attachment.url);
+                    }
+                }
+
+                try {
+                    const starboardMessage = await starboardChannel.send({ embeds: [embed] });
+                    starboardMessages.set(message.id, starboardMessage.id);
+                    await DatabaseService.saveStarboardMessage(message.guild.id, message.id, starboardMessage.id);
+                    console.log(`[Starboard] Bot owner featured message ${message.id}`);
+                } catch (error) {
+                    console.error('[Starboard] Error sending bot owner featured message:', error);
+                }
+            }
+            return; // Skip normal star processing
+        }
+        
+        // Don't allow regular users to star their own messages
+        if (message.author.id === user.id) {
             try {
                 await reaction.users.remove(user.id);
             } catch (error) {
-                console.error('Error removing self-star:', error);
+                console.error('[Starboard] Error removing self-star:', error);
             }
             return;
         }
         
-        // Get starboard channel
-        let starboardChannel;
+        // Get fresh star count by fetching reaction users (exclude bots)
+        const starReaction = message.reactions.cache.get('⭐');
+        if (!starReaction) {
+            return; // No star reaction found
+        }
+
+        let starCount = 0;
         try {
-            starboardChannel = await reaction.message.guild.channels.fetch(config.channelId);
-            if (!starboardChannel) {
-                console.log('Starboard: Channel not found');
-                return;
-            }
+            const users = await starReaction.users.fetch();
+            starCount = users.filter(u => !u.bot).size;
         } catch (error) {
-            console.error('Error fetching starboard channel:', error);
-            return;
+            console.error('[Starboard] Error fetching reaction users:', error);
+            starCount = starReaction.count - 1; // Fallback to cached count
         }
-        
-        // Get current star count by fetching fresh reaction data
-        const starReaction = reaction.message.reactions.cache.get('⭐');
-        const starCount = starReaction ? starReaction.count : 0;
-        const messageId = reaction.message.id;
-        
+
         const threshold = config.threshold || 3;
         
-        // Check if message is already on starboard
-        const existingStarboardMessageId = starboardMessages.get(messageId);
-        let existingStarboardMessage = null;
-        
-        if (existingStarboardMessageId) {
-            try {
-                existingStarboardMessage = await starboardChannel.messages.fetch(existingStarboardMessageId);
-            } catch (error) {
-                // Starboard message was deleted, clean up
-                starboardMessages.delete(messageId);
-                await DatabaseService.deleteStarboardMessage(reaction.message.guild.id, messageId);
-            }
+        // Get starboard channel
+        const starboardChannel = message.guild.channels.cache.get(config.channelId);
+        if (!starboardChannel) {
+            console.error('[Starboard] Starboard channel not found:', config.channelId);
+            return;
         }
+
+        // Verify bot can send messages
+        const botPermissions = starboardChannel.permissionsFor(message.guild.members.me);
+        if (!botPermissions || !botPermissions.has(['SendMessages', 'EmbedLinks'])) {
+            console.error('[Starboard] Bot lacks permissions in starboard channel');
+            return;
+        }
+
+        // Check if message is already on starboard
+        const existingStarboardMessageId = starboardMessages.get(message.id);
         
         if (starCount >= threshold) {
-            const embed = createStarboardEmbed(reaction.message, starCount);
-            
-            if (existingStarboardMessage) {
-                // Update existing message
-                await existingStarboardMessage.edit({ embeds: [embed] });
+            // Create or update starboard message
+            const embed = new EmbedBuilder()
+                .setColor('#FFD700')
+                .setAuthor({ 
+                    name: message.author.tag || 'Unknown User',
+                    iconURL: message.author.displayAvatarURL() || undefined
+                })
+                .setDescription(message.content || '*[No text content]*')
+                .addFields({ 
+                    name: 'Source', 
+                    value: `[Jump to Message](${message.url})`,
+                    inline: true
+                })
+                .setTimestamp(message.createdAt)
+                .setFooter({ text: `⭐ ${starCount} | Message ID: ${message.id}` });
+
+            // Add image if present
+            if (message.attachments.size > 0) {
+                const attachment = message.attachments.first();
+                if (attachment.contentType?.startsWith('image/')) {
+                    embed.setImage(attachment.url);
+                }
+            }
+
+            if (existingStarboardMessageId) {
+                // Update existing starboard message
+                try {
+                    const starboardMessage = await starboardChannel.messages.fetch(existingStarboardMessageId);
+                    await starboardMessage.edit({ embeds: [embed] });
+                    console.log(`[Starboard] Updated message ${message.id} with ${starCount} stars`);
+                } catch (error) {
+                    console.error('[Starboard] Error updating starboard message:', error);
+                    // If message was deleted, remove from tracking and create new one
+                    starboardMessages.delete(message.id);
+                    await DatabaseService.deleteStarboardMessage(message.guild.id, message.id);
+                    
+                    // Create new starboard message
+                    const newStarboardMessage = await starboardChannel.send({ embeds: [embed] });
+                    starboardMessages.set(message.id, newStarboardMessage.id);
+                    await DatabaseService.saveStarboardMessage(message.guild.id, message.id, newStarboardMessage.id);
+                    console.log(`[Starboard] Re-created starboard message for ${message.id}`);
+                }
             } else {
                 // Create new starboard message
-                const starboardMsg = await starboardChannel.send({ embeds: [embed] });
-                
-                // Track the mapping
-                starboardMessages.set(messageId, starboardMsg.id);
-                await DatabaseService.saveStarboardMessage(
-                    reaction.message.guild.id,
-                    messageId,
-                    starboardMsg.id
-                );
+                try {
+                    const starboardMessage = await starboardChannel.send({ embeds: [embed] });
+                    starboardMessages.set(message.id, starboardMessage.id);
+                    await DatabaseService.saveStarboardMessage(message.guild.id, message.id, starboardMessage.id);
+                    console.log(`[Starboard] Created starboard message for ${message.id} with ${starCount} stars`);
+                } catch (error) {
+                    console.error('[Starboard] Error sending starboard message:', error);
+                }
             }
-        } else if (existingStarboardMessage && starCount < threshold) {
+        } else if (existingStarboardMessageId && starCount < threshold) {
             // Remove from starboard if below threshold
             try {
-                await existingStarboardMessage.delete();
-                starboardMessages.delete(messageId);
-                await DatabaseService.deleteStarboardMessage(reaction.message.guild.id, messageId);
+                const starboardMessage = await starboardChannel.messages.fetch(existingStarboardMessageId);
+                await starboardMessage.delete();
+                starboardMessages.delete(message.id);
+                await DatabaseService.deleteStarboardMessage(message.guild.id, message.id);
+                console.log(`[Starboard] Removed message ${message.id} (below threshold: ${starCount}/${threshold})`);
             } catch (error) {
-                console.error('Error removing starboard message:', error);
+                console.error('[Starboard] Error deleting starboard message:', error);
+                // Clean up tracking even if delete failed
+                starboardMessages.delete(message.id);
+                await DatabaseService.deleteStarboardMessage(message.guild.id, message.id);
             }
         }
     } catch (error) {
@@ -6770,9 +6916,36 @@ async function handleStarboardSlash(interaction) {
     switch (subcommand) {
         case 'setup':
             const channel = interaction.options.getChannel('channel');
+            const threshold = interaction.options.getInteger('threshold') || 3;
+
+            // Validate channel type
+            if (channel.type !== ChannelType.GuildText) {
+                return interaction.reply({ 
+                    embeds: [createErrorEmbed('Invalid Channel', 'The starboard channel must be a text channel.')],
+                    flags: MessageFlags.Ephemeral 
+                });
+            }
+
+            // Validate bot permissions in target channel
+            const botPermissions = channel.permissionsFor(interaction.guild.members.me);
+            if (!botPermissions || !botPermissions.has(['ViewChannel', 'SendMessages', 'EmbedLinks'])) {
+                return interaction.reply({ 
+                    embeds: [createErrorEmbed('Missing Permissions', 'I don\'t have the required permissions in that channel. I need: View Channel, Send Messages, and Embed Links.')],
+                    flags: MessageFlags.Ephemeral 
+                });
+            }
+
+            // Validate threshold
+            if (threshold < 1 || threshold > 50) {
+                return interaction.reply({ 
+                    embeds: [createErrorEmbed('Invalid Threshold', 'Threshold must be between 1 and 50.')],
+                    flags: MessageFlags.Ephemeral 
+                });
+            }
+
             const newConfig = {
                 channelId: channel.id,
-                threshold: 3,
+                threshold: threshold,
                 emoji: '⭐'
             };
             
@@ -6781,32 +6954,65 @@ async function handleStarboardSlash(interaction) {
                 // Update in-memory cache
                 starboardConfigs.set(interaction.guild.id, newConfig);
             } else {
-                console.error('Failed to save starboard config to database');
+                console.error('[Starboard] Failed to save starboard config to database');
                 // Still update in-memory for current session
                 starboardConfigs.set(interaction.guild.id, newConfig);
             }
             
-            const embed = createSuccessEmbed(
-                'Starboard Setup Complete',
-                `Starboard has been set up in ${channel}! ⭐ react to messages to add them to the starboard.`
-            );
+            const embed = new EmbedBuilder()
+                .setColor('#FFD700')
+                .setTitle('⭐ Starboard Configured')
+                .setDescription('The starboard has been set up successfully!')
+                .addFields(
+                    { name: 'Channel', value: `${channel}`, inline: true },
+                    { name: 'Threshold', value: `${threshold} ⭐`, inline: true }
+                )
+                .setTimestamp();
+
             await interaction.reply({ embeds: [embed] });
+            console.log(`[Starboard] Configured for guild ${interaction.guild.id}: channel=${channel.id}, threshold=${threshold}`);
             break;
             
         case 'auto-setup':
+            await interaction.deferReply();
+            
             const channelName = interaction.options.getString('name') || 'starboard';
+            
             try {
+                // Check if bot can manage channels
+                const botPerms = interaction.guild.members.me.permissions;
+                if (!botPerms.has('ManageChannels')) {
+                    return interaction.editReply({ 
+                        embeds: [createErrorEmbed('Missing Permissions', 'I need the "Manage Channels" permission to create the starboard channel.')]
+                    });
+                }
+
                 const starboardChannel = await interaction.guild.channels.create({
                     name: channelName,
                     type: ChannelType.GuildText,
+                    topic: '⭐ Messages that receive enough stars appear here!',
+                    reason: 'Starboard auto-setup',
                     permissionOverwrites: [
                         {
-                            id: interaction.guild.roles.everyone.id,
-                            deny: [PermissionFlagsBits.SendMessages],
-                            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory]
+                            id: interaction.guild.id, // @everyone
+                            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+                            deny: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AddReactions]
+                        },
+                        {
+                            id: interaction.client.user.id, // Bot
+                            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.ReadMessageHistory]
                         }
                     ]
                 });
+
+                // Verify bot can use the channel
+                const botChannelPerms = starboardChannel.permissionsFor(interaction.guild.members.me);
+                if (!botChannelPerms.has(['SendMessages', 'EmbedLinks'])) {
+                    await starboardChannel.delete();
+                    return interaction.editReply({ 
+                        embeds: [createErrorEmbed('Setup Failed', 'Failed to set up proper permissions for the starboard channel.')]
+                    });
+                }
                 
                 const autoConfig = {
                     channelId: starboardChannel.id,
@@ -6819,67 +7025,89 @@ async function handleStarboardSlash(interaction) {
                     // Update in-memory cache
                     starboardConfigs.set(interaction.guild.id, autoConfig);
                 } else {
-                    console.error('Failed to save auto starboard config to database');
+                    console.error('[Starboard] Failed to save auto starboard config to database');
                     // Still update in-memory for current session
                     starboardConfigs.set(interaction.guild.id, autoConfig);
                 }
                 
                 const welcomeEmbed = new EmbedBuilder()
-                    .setColor('#ffd700')
+                    .setColor('#FFD700')
                     .setTitle('⭐ Welcome to the Starboard!')
-                    .setDescription('React to messages with ⭐ to feature them here!\n\n**How it works:**\n• React with ⭐ on any message\n• When a message gets 3+ stars, it appears here\n• You cannot star your own messages')
-                    .setFooter({ text: 'Happy starring! ✨' });
+                    .setDescription('Messages that receive **3 or more** ⭐ reactions will appear here.')
+                    .addFields({ 
+                        name: 'How it works', 
+                        value: 'React to any message with ⭐ to nominate it for the starboard!' 
+                    })
+                    .setTimestamp();
                 
                 await starboardChannel.send({ embeds: [welcomeEmbed] });
                 
-                const setupEmbed = createSuccessEmbed(
-                    'Starboard Auto-Setup Complete',
-                    `Created ${starboardChannel} with optimal settings! The starboard is ready to use.`
-                );
-                await interaction.reply({ embeds: [setupEmbed] });
+                const setupEmbed = new EmbedBuilder()
+                    .setColor('#FFD700')
+                    .setTitle('✅ Starboard Auto-Setup Complete')
+                    .setDescription('The starboard has been automatically configured!')
+                    .addFields(
+                        { name: 'Channel', value: `${starboardChannel}`, inline: true },
+                        { name: 'Threshold', value: `3 ⭐`, inline: true }
+                    )
+                    .setTimestamp();
+
+                await interaction.editReply({ embeds: [setupEmbed] });
+                console.log(`[Starboard] Auto-setup completed for guild ${interaction.guild.id}`);
             } catch (error) {
-                console.error('Error creating starboard channel:', error);
-                await interaction.reply({ 
-                    embeds: [createErrorEmbed('Setup Failed', 'Failed to create starboard channel.')], 
-                    flags: MessageFlags.Ephemeral 
+                console.error('[Starboard] Error in auto-setup:', error);
+                logError('handleStarboardAutoSetup', error, { guildId: interaction.guild?.id });
+                await interaction.editReply({ 
+                    embeds: [createErrorEmbed('Setup Failed', 'An error occurred during auto-setup.')]
                 });
             }
             break;
             
         case 'threshold':
-            const threshold = interaction.options.getInteger('amount');
-            const config = await getStarboardConfig(interaction.guild.id);
+            const newThreshold = interaction.options.getInteger('amount');
+            const currentConfig = await getStarboardConfig(interaction.guild.id);
             
-            if (!config) {
+            if (!currentConfig) {
                 return interaction.reply({ 
                     embeds: [createErrorEmbed('No Starboard', 'Please set up a starboard first with `/starboard setup`.')], 
                     flags: MessageFlags.Ephemeral 
                 });
             }
-            
-            config.threshold = threshold;
-            
-            const thresholdSaveSuccess = await DatabaseService.saveStarboardConfig(interaction.guild.id, config);
-            if (thresholdSaveSuccess) {
-                // Update in-memory cache
-                starboardConfigs.set(interaction.guild.id, config);
-            } else {
-                console.error('Failed to save updated starboard config to database');
-                // Still update in-memory for current session
-                starboardConfigs.set(interaction.guild.id, config);
+
+            // Validate threshold
+            if (newThreshold < 1 || newThreshold > 50) {
+                return interaction.reply({ 
+                    embeds: [createErrorEmbed('Invalid Threshold', 'Threshold must be between 1 and 50.')],
+                    flags: MessageFlags.Ephemeral 
+                });
             }
             
-            const thresholdEmbed = createSuccessEmbed(
-                'Threshold Updated',
-                `Starboard threshold set to ${threshold} stars.`
-            );
+            currentConfig.threshold = newThreshold;
+            
+            const thresholdSaveSuccess = await DatabaseService.saveStarboardConfig(interaction.guild.id, currentConfig);
+            if (thresholdSaveSuccess) {
+                // Update in-memory cache
+                starboardConfigs.set(interaction.guild.id, currentConfig);
+            } else {
+                console.error('[Starboard] Failed to save updated starboard config to database');
+                // Still update in-memory for current session
+                starboardConfigs.set(interaction.guild.id, currentConfig);
+            }
+            
+            const thresholdEmbed = new EmbedBuilder()
+                .setColor('#FFD700')
+                .setTitle('✅ Threshold Updated')
+                .setDescription(`Starboard threshold set to **${newThreshold}** ⭐`)
+                .setTimestamp();
+
             await interaction.reply({ embeds: [thresholdEmbed] });
+            console.log(`[Starboard] Threshold updated for guild ${interaction.guild.id}: ${newThreshold}`);
             break;
             
         case 'info':
-            const currentConfig = await getStarboardConfig(interaction.guild.id);
+            const infoConfig = await getStarboardConfig(interaction.guild.id);
             
-            if (!currentConfig) {
+            if (!infoConfig) {
                 return interaction.reply({ 
                     embeds: [createErrorEmbed('No Starboard', 'No starboard is configured for this server.')], 
                     flags: MessageFlags.Ephemeral 
@@ -6887,11 +7115,11 @@ async function handleStarboardSlash(interaction) {
             }
             
             const infoEmbed = new EmbedBuilder()
-                .setColor('#ffd700')
+                .setColor('#FFD700')
                 .setTitle('⭐ Starboard Configuration')
                 .addFields(
-                    { name: 'Channel', value: `<#${currentConfig.channelId}>`, inline: true },
-                    { name: 'Threshold', value: `${currentConfig.threshold} stars`, inline: true }
+                    { name: 'Channel', value: `<#${infoConfig.channelId}>`, inline: true },
+                    { name: 'Threshold', value: `${infoConfig.threshold} ⭐`, inline: true }
                 )
                 .setTimestamp();
             
