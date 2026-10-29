@@ -1,4 +1,4 @@
-const MongoDB = require('./mongodb');
+﻿const MongoDB = require('./mongodb');
 const RedisCache = require('./redis');
 const { 
     User, 
@@ -19,7 +19,6 @@ class DatabaseService {
         this.redis = RedisCache;
         this.isInitialized = false;
         
-        // Query optimization tracking
         this.queryStats = {
             totalQueries: 0,
             cacheHits: 0,
@@ -27,12 +26,10 @@ class DatabaseService {
             averageResponseTime: 0
         };
         
-        // Batch operation queue for optimization
         this.batchQueue = new Map();
         this.batchTimeout = null;
     }
 
-    // Performance monitoring method
     recordQuery(operation, duration, cached = false) {
         this.queryStats.totalQueries++;
         if (cached) this.queryStats.cacheHits++;
@@ -43,7 +40,6 @@ class DatabaseService {
             this.queryStats.totalQueries;
     }
 
-    // Get performance statistics
     getPerformanceStats() {
         const cacheHitRate = this.queryStats.totalQueries > 0 ? 
             (this.queryStats.cacheHits / this.queryStats.totalQueries * 100).toFixed(2) : 0;
@@ -55,27 +51,24 @@ class DatabaseService {
         };
     }
 
-    // Initialize both MongoDB and Redis connections
     async initialize(mongoUri, redisUrl) {
         try {
-            console.log('🔄 Initializing Database Service...');
+            console.log('ðŸ”„ Initializing Database Service...');
             
-            // Connect to MongoDB
             await this.mongodb.connect(mongoUri);
             
-            // Connect to Redis (optional, fallback to MongoDB only if Redis fails)
             try {
                 await this.redis.connect(redisUrl);
             } catch (redisError) {
-                console.warn('⚠️ Redis connection failed, continuing with MongoDB only:', redisError.message);
+                console.warn('âš ï¸ Redis connection failed, continuing with MongoDB only:', redisError.message);
             }
             
             this.isInitialized = true;
-            console.log('✅ Database Service initialized successfully');
+            console.log('âœ… Database Service initialized successfully');
             
             return true;
         } catch (error) {
-            console.error('❌ Database Service initialization failed:', error);
+            console.error('âŒ Database Service initialization failed:', error);
             throw error;
         }
     }
@@ -86,28 +79,23 @@ class DatabaseService {
             this.redis.disconnect()
         ]);
         this.isInitialized = false;
-        console.log('📴 Database Service closed');
+        console.log('ðŸ“´ Database Service closed');
     }
 
-    // Helper method to check if caching is available
     isRedisAvailable() {
         return this.redis.isRedisConnected();
     }
 
-    // CUSTOM COMMANDS METHODS
     
     async getCustomCommand(guildId, commandName) {
         try {
-            // Try Redis cache first
             if (this.isRedisAvailable()) {
                 const cached = await this.redis.getCustomCommand(guildId, commandName);
                 if (cached) return cached;
             }
             
-            // Fallback to MongoDB
             const command = await CustomCommand.findOne({ guildId, name: commandName });
             
-            // Cache the result if Redis is available
             if (command && this.isRedisAvailable()) {
                 await this.redis.setCustomCommand(guildId, commandName, command.toObject());
             }
@@ -124,7 +112,6 @@ class DatabaseService {
             const command = new CustomCommand({ guildId, ...commandData });
             await command.save();
             
-            // Update cache
             if (this.isRedisAvailable()) {
                 await this.redis.setCustomCommand(guildId, commandData.name, command.toObject());
                 await this.redis.invalidateGuildCommands(guildId);
@@ -175,20 +162,17 @@ class DatabaseService {
 
     async getGuildCustomCommands(guildId) {
         try {
-            // Try Redis cache first
             if (this.isRedisAvailable()) {
                 const cached = await this.redis.getGuildCustomCommands(guildId);
                 if (cached) return cached;
             }
             
-            // Fallback to MongoDB
             const commands = await CustomCommand.find({ guildId }).lean();
             const commandMap = {};
             commands.forEach(cmd => {
                 commandMap[cmd.name] = cmd;
             });
             
-            // Cache the result
             if (this.isRedisAvailable()) {
                 await this.redis.setGuildCustomCommands(guildId, commandMap);
             }
@@ -221,26 +205,21 @@ class DatabaseService {
         }
     }
 
-    // USER DATA METHODS
     
     async getUserData(userId, guildId) {
         try {
-            // Try Redis cache first
             if (this.isRedisAvailable()) {
                 const cached = await this.redis.getUserData(userId, guildId);
                 if (cached) return cached;
             }
             
-            // Fallback to MongoDB
             let user = await User.findOne({ userId, guildId }).lean();
             
-            // Create user if doesn't exist
             if (!user) {
                 user = await User.create({ userId, guildId });
                 user = user.toObject();
             }
             
-            // Cache the result
             if (this.isRedisAvailable()) {
                 await this.redis.setUserData(userId, guildId, user);
             }
@@ -260,7 +239,6 @@ class DatabaseService {
                 { new: true, upsert: true }
             ).lean();
             
-            // Update cache
             if (this.isRedisAvailable()) {
                 await this.redis.setUserData(userId, guildId, user);
             }
@@ -283,7 +261,6 @@ class DatabaseService {
                 { new: true, upsert: true }
             );
 
-            // Check for level up
             const newLevel = Math.floor(user.xp / 1000);
             if (newLevel > user.level) {
                 user.level = newLevel;
@@ -292,7 +269,6 @@ class DatabaseService {
 
             const userObj = user.toObject();
             
-            // Update cache
             if (this.isRedisAvailable()) {
                 await this.redis.setUserData(userId, guildId, userObj);
             }
@@ -304,7 +280,6 @@ class DatabaseService {
         }
     }
 
-    // AFK SYSTEM METHODS
     
     async setUserAFK(userId, guildId, reason) {
         try {
@@ -322,7 +297,6 @@ class DatabaseService {
                 { upsert: true, new: true }
             );
 
-            // Cache in Redis with TTL
             if (this.isRedisAvailable()) {
                 await this.redis.setAFKStatus(userId, guildId, afkData);
             }
@@ -336,16 +310,13 @@ class DatabaseService {
 
     async getUserAFK(userId, guildId) {
         try {
-            // Try Redis cache first
             if (this.isRedisAvailable()) {
                 const cached = await this.redis.getAFKStatus(userId, guildId);
                 if (cached) return cached;
             }
             
-            // Fallback to MongoDB
             const afk = await AFK.findOne({ userId, guildId }).lean();
             
-            // Cache the result if found
             if (afk && this.isRedisAvailable()) {
                 await this.redis.setAFKStatus(userId, guildId, afk);
             }
@@ -361,7 +332,6 @@ class DatabaseService {
         try {
             await AFK.deleteOne({ userId, guildId });
             
-            // Remove from cache
             if (this.isRedisAvailable()) {
                 await this.redis.removeAFKStatus(userId, guildId);
             }
@@ -380,7 +350,6 @@ class DatabaseService {
                 { $push: { mentions: { ...mentionData, timestamp: new Date() } } }
             );
             
-            // Invalidate cache to force refresh
             if (this.isRedisAvailable()) {
                 await this.redis.removeAFKStatus(userId, guildId);
             }
@@ -394,7 +363,6 @@ class DatabaseService {
 
     async getGuildAFKUsers(guildId) {
         try {
-            // Get all AFK users for a specific guild
             const afkUsers = await AFK.find({ guildId }).lean();
             return afkUsers || [];
         } catch (error) {
@@ -403,13 +371,11 @@ class DatabaseService {
         }
     }
 
-    // QUARANTINE METHODS
     
     async createQuarantineRecord(recordData) {
         try {
             const record = await QuarantineRecord.create(recordData);
             
-            // Cache active quarantine
             if (recordData.active && this.isRedisAvailable()) {
                 await this.redis.setActiveQuarantine(recordData.userId, recordData.guildId, record.toObject());
             }
@@ -423,20 +389,17 @@ class DatabaseService {
 
     async getActiveQuarantine(userId, guildId) {
         try {
-            // Try Redis cache first
             if (this.isRedisAvailable()) {
                 const cached = await this.redis.getActiveQuarantine(userId, guildId);
                 if (cached) return cached;
             }
             
-            // Fallback to MongoDB
             const record = await QuarantineRecord.findOne({ 
                 userId, 
                 guildId, 
                 active: true 
             }).lean();
             
-            // Cache the result
             if (record && this.isRedisAvailable()) {
                 await this.redis.setActiveQuarantine(userId, guildId, record);
             }
@@ -456,7 +419,6 @@ class DatabaseService {
                 { new: true }
             ).lean();
             
-            // Update or remove cache based on active status
             if (this.isRedisAvailable()) {
                 if (record && record.active) {
                     await this.redis.setActiveQuarantine(userId, guildId, record);
@@ -491,7 +453,6 @@ class DatabaseService {
         }
     }
 
-    // REMINDER METHODS
     
     async createReminder(reminderData) {
         try {
@@ -534,26 +495,21 @@ class DatabaseService {
         }
     }
 
-    // GUILD SETTINGS METHODS
     
     async getGuildSettings(guildId) {
         try {
-            // Try Redis cache first
             if (this.isRedisAvailable()) {
                 const cached = await this.redis.getGuildSettings(guildId);
                 if (cached) return cached;
             }
             
-            // Fallback to MongoDB
             let settings = await GuildSettings.findOne({ guildId }).lean();
             
-            // Create default settings if doesn't exist
             if (!settings) {
                 settings = await GuildSettings.create({ guildId });
                 settings = settings.toObject();
             }
             
-            // Cache the result
             if (this.isRedisAvailable()) {
                 await this.redis.setGuildSettings(guildId, settings);
             }
@@ -573,7 +529,6 @@ class DatabaseService {
                 { new: true, upsert: true }
             ).lean();
             
-            // Update cache
             if (this.isRedisAvailable()) {
                 await this.redis.setGuildSettings(guildId, settings);
             }
@@ -585,7 +540,6 @@ class DatabaseService {
         }
     }
 
-    // STARBOARD METHODS
     
     async getStarboardConfig(guildId) {
         try {
@@ -594,7 +548,6 @@ class DatabaseService {
                 if (cached) return cached;
             }
             
-            // Fetch the config entry (marked with __CONFIG__ messageId)
             const config = await Starboard.findOne({ guildId, messageId: '__CONFIG__' }).lean();
             
             if (config && this.isRedisAvailable()) {
@@ -610,7 +563,6 @@ class DatabaseService {
 
     async saveStarboardConfig(guildId, config) {
         try {
-            // Store config with a special marker to distinguish from message entries
             await Starboard.findOneAndUpdate(
                 { guildId, messageId: '__CONFIG__' },
                 { 
@@ -618,12 +570,11 @@ class DatabaseService {
                     messageId: '__CONFIG__',
                     channelId: config.channelId,
                     threshold: config.threshold || 3,
-                    emoji: config.emoji || '⭐'
+                    emoji: config.emoji || 'â­'
                 },
                 { upsert: true }
             );
             
-            // Invalidate cache
             if (this.isRedisAvailable()) {
                 await this.redis.removeStarboardConfig(guildId);
             }
@@ -671,7 +622,6 @@ class DatabaseService {
 
     async getAllStarboardConfigs() {
         try {
-            // Get all starboard configurations (marked with __CONFIG__ messageId)
             const configs = await Starboard.find({ messageId: '__CONFIG__' })
                 .select('guildId channelId threshold emoji')
                 .lean();
@@ -680,7 +630,7 @@ class DatabaseService {
                 guildId: config.guildId,
                 channelId: config.channelId,
                 threshold: config.threshold || 3,
-                emoji: config.emoji || '⭐'
+                emoji: config.emoji || 'â­'
             }));
         } catch (error) {
             console.error('Error getting all starboard configs:', error);
@@ -690,7 +640,6 @@ class DatabaseService {
 
     async getAllStarboardMessages() {
         try {
-            // Get all starboard messages with mapping (exclude config entries)
             const messages = await Starboard.find({ 
                 starboardMessageId: { $ne: null },
                 messageId: { $ne: '__CONFIG__' }
@@ -736,13 +685,11 @@ class DatabaseService {
         }
     }
 
-    // AUTO REACTION METHODS
     
     async getGuildAutoReactions(guildId) {
         try {
             const reactions = await UserAutoReaction.find({ guildId }).lean();
             
-            // Return a Map to match the expected interface
             const reactionMap = new Map();
             reactions.forEach(reaction => {
                 reactionMap.set(reaction.userId, {
@@ -802,7 +749,6 @@ class DatabaseService {
             const reaction = new AutoReaction({ guildId, ...reactionData });
             await reaction.save();
             
-            // Clear cache to force refresh
             if (this.isRedisAvailable()) {
                 await this.redis.deleteGuildAutoReactions(guildId);
             }
@@ -818,7 +764,6 @@ class DatabaseService {
         try {
             const result = await AutoReaction.deleteOne({ guildId, trigger });
             
-            // Clear cache to force refresh
             if (this.isRedisAvailable()) {
                 await this.redis.deleteGuildAutoReactions(guildId);
             }
@@ -830,7 +775,6 @@ class DatabaseService {
         }
     }
 
-    // UTILITY METHODS
     
     async getLeaderboard(guildId, type = 'xp', limit = 10) {
         try {
@@ -862,7 +806,6 @@ class DatabaseService {
         }
     }
 
-    // REMINDER METHODS
     async getAllActiveReminders() {
         try {
             const reminders = await Reminder.find({ active: true }).lean();
@@ -929,19 +872,17 @@ class DatabaseService {
         try {
             const now = new Date();
             
-            // Cleanup expired quarantines
             await QuarantineRecord.updateMany(
                 { expiresAt: { $lte: now }, active: true },
                 { active: false }
             );
             
-            // Cleanup old reminders
             await Reminder.deleteMany({
                 reminderTime: { $lt: new Date(now - 24 * 60 * 60 * 1000) },
                 active: false
             });
             
-            console.log('🧹 Expired data cleanup completed');
+            console.log('ðŸ§¹ Expired data cleanup completed');
             return true;
         } catch (error) {
             console.error('Error cleaning up expired data:', error);
@@ -949,7 +890,6 @@ class DatabaseService {
         }
     }
 
-    // HEALTH CHECK
     async healthCheck() {
         const health = {
             mongodb: this.mongodb.isConnectedToDatabase(),
@@ -960,7 +900,6 @@ class DatabaseService {
         return health;
     }
 
-    // FROZEN NICKNAME METHODS
     async freezeNickname(userId, guildId, frozenNickname, moderatorId, reason = 'No reason provided') {
         try {
             const freezeData = {

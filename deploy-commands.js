@@ -1,16 +1,6 @@
-/*
- * Deploy Script for Discord Bot Slash Commands
- *
- * This script registers slash commands for your Discord bot.
- * Run this once after setting up your bot to register the commands.
- *
- * Usage: node deploy-commands.js
- */
-
 require('dotenv').config();
 const { REST, Routes } = require('discord.js');
 
-// Import commands from main.js
 const { commands } = require('./main.js');
 
 const rest = new REST().setToken(process.env.TOKEN);
@@ -19,7 +9,6 @@ async function deployCommands() {
     try {
         console.log('🚀 Started refreshing application (/) commands.');
 
-        // Convert commands to JSON
         const commandData = commands.map(command => command.toJSON());
 
         console.log(`📋 Found ${commandData.length} commands to register:`);
@@ -27,7 +16,6 @@ async function deployCommands() {
             console.log(`   /${cmd.name} - ${cmd.description}`);
         });
 
-        // Register commands globally
         const data = await rest.put(
             Routes.applicationCommands(process.env.CLIENT_ID),
             { body: commandData },
@@ -51,5 +39,4 @@ async function deployCommands() {
     }
 }
 
-// Run the deployment
 deployCommands();

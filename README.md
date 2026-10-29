@@ -38,7 +38,7 @@ A comprehensive Discord moderation bot built with discord.js v14 that supports b
    - Copy the bot token
 
 3. **Configure Environment**
-   - Copy the bot token to `.env` file under `DISCORD_TOKEN`
+   - Copy the bot token to `.env` file under `TOKEN`
    - Get your Client ID from the "General Information" tab
    - Get your Guild ID by right-clicking your server and "Copy Server ID"
    - **Optional:** Add authorized user IDs to `AUTHORIZED_USERS` (comma-separated)

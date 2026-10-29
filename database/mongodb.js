@@ -1,6 +1,5 @@
-const mongoose = require('mongoose');
+﻿const mongoose = require('mongoose');
 
-// MongoDB connection setup
 class MongoDB {
     constructor() {
         this.isConnected = false;
@@ -9,31 +8,30 @@ class MongoDB {
 
     async connect(uri) {
         try {
-            console.log('🔄 Connecting to MongoDB...');
+            console.log('ðŸ”„ Connecting to MongoDB...');
             
             this.connection = await mongoose.connect(uri, {
-                maxPoolSize: 50,           // Maximum 50 concurrent connections
-                serverSelectionTimeoutMS: 5000,  // Keep connections fast
-                socketTimeoutMS: 45000     // Socket timeout
+                maxPoolSize: 50,
+                serverSelectionTimeoutMS: 5000,
+                socketTimeoutMS: 45000
             });
 
             this.isConnected = true;
-            console.log('✅ MongoDB connected successfully');
+            console.log('âœ… MongoDB connected successfully');
             
-            // Handle connection events
             mongoose.connection.on('error', (error) => {
-                console.error('❌ MongoDB connection error:', error);
+                console.error('âŒ MongoDB connection error:', error);
                 this.isConnected = false;
             });
 
             mongoose.connection.on('disconnected', () => {
-                console.log('⚠️ MongoDB disconnected');
+                console.log('âš ï¸ MongoDB disconnected');
                 this.isConnected = false;
             });
 
             return this.connection;
         } catch (error) {
-            console.error('❌ MongoDB connection failed:', error);
+            console.error('âŒ MongoDB connection failed:', error);
             this.isConnected = false;
             throw error;
         }
@@ -43,7 +41,7 @@ class MongoDB {
         if (this.connection) {
             await mongoose.disconnect();
             this.isConnected = false;
-            console.log('📴 MongoDB disconnected');
+            console.log('ðŸ“´ MongoDB disconnected');
         }
     }
 

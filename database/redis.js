@@ -1,6 +1,5 @@
-const Redis = require('ioredis');
+﻿const Redis = require('ioredis');
 
-// Redis connection and caching layer
 class RedisCache {
     constructor() {
         this.client = null;
@@ -11,11 +10,9 @@ class RedisCache {
 
     async connect(redisConfig = 'redis://localhost:6379') {
         try {
-            console.log('🔄 Connecting to Redis...');
+            console.log('ðŸ”„ Connecting to Redis...');
             
-            // Handle both URL string and object configuration
             if (typeof redisConfig === 'object') {
-                // Object configuration (preferred for Redis Cloud)
                 this.client = new Redis({
                     ...redisConfig,
                     maxRetriesPerRequest: 3,
@@ -27,7 +24,6 @@ class RedisCache {
                     commandTimeout: 5000
                 });
             } else {
-                // URL string configuration
                 this.client = new Redis(redisConfig, {
                     maxRetriesPerRequest: 3,
                     retryDelayOnFailover: 100,
@@ -39,37 +35,34 @@ class RedisCache {
                 });
             }
 
-            // Connection event handlers
             this.client.on('connect', () => {
-                console.log('✅ Redis connected successfully');
+                console.log('âœ… Redis connected successfully');
                 this.isConnected = true;
                 this.connectionRetries = 0;
             });
 
             this.client.on('error', (error) => {
-                console.error('❌ Redis connection error:', error.message);
+                console.error('âŒ Redis connection error:', error.message);
                 this.isConnected = false;
                 
-                // Auto-reconnect logic
                 if (this.connectionRetries < this.maxRetries) {
                     this.connectionRetries++;
-                    console.log(`🔄 Attempting Redis reconnection (${this.connectionRetries}/${this.maxRetries})...`);
+                    console.log(`ðŸ”„ Attempting Redis reconnection (${this.connectionRetries}/${this.maxRetries})...`);
                     setTimeout(() => this.connect(redisConfig), 5000 * this.connectionRetries);
                 }
             });
 
             this.client.on('close', () => {
-                console.log('⚠️ Redis connection closed');
+                console.log('âš ï¸ Redis connection closed');
                 this.isConnected = false;
             });
 
-            // Test connection with proper connection handling
             await this.client.connect();
             await this.client.ping();
             return this.client;
 
         } catch (error) {
-            console.error('❌ Redis connection failed:', error);
+            console.error('âŒ Redis connection failed:', error);
             this.isConnected = false;
             throw error;
         }
@@ -79,11 +72,10 @@ class RedisCache {
         if (this.client) {
             await this.client.quit();
             this.isConnected = false;
-            console.log('📴 Redis disconnected');
+            console.log('ðŸ“´ Redis disconnected');
         }
     }
 
-    // Generic cache methods
     async get(key) {
         if (!this.isConnected) return null;
         try {
@@ -132,9 +124,7 @@ class RedisCache {
         }
     }
 
-    // Specialized caching methods for Discord bot data
     
-    // Custom Commands Cache
     async getCustomCommand(guildId, commandName) {
         return await this.get(`custom_cmd:${guildId}:${commandName}`);
     }
@@ -147,7 +137,6 @@ class RedisCache {
         return await this.del(`custom_cmd:${guildId}:${commandName}`);
     }
 
-    // Guild Custom Commands List Cache
     async getGuildCustomCommands(guildId) {
         return await this.get(`guild_cmds:${guildId}`);
     }
@@ -160,7 +149,6 @@ class RedisCache {
         await this.del(`guild_cmds:${guildId}`);
     }
 
-    // User Data Cache
     async getUserData(userId, guildId) {
         return await this.get(`user:${guildId}:${userId}`);
     }
@@ -173,7 +161,6 @@ class RedisCache {
         return await this.del(`user:${guildId}:${userId}`);
     }
 
-    // AFK Status Cache
     async getAFKStatus(userId, guildId) {
         return await this.get(`afk:${guildId}:${userId}`);
     }
@@ -186,7 +173,6 @@ class RedisCache {
         return await this.del(`afk:${guildId}:${userId}`);
     }
 
-    // Guild Settings Cache
     async getGuildSettings(guildId) {
         return await this.get(`guild_settings:${guildId}`);
     }
@@ -199,7 +185,6 @@ class RedisCache {
         return await this.del(`guild_settings:${guildId}`);
     }
 
-    // Starboard Config Cache
     async getStarboardConfig(guildId) {
         return await this.get(`starboard:config:${guildId}`);
     }
@@ -212,7 +197,6 @@ class RedisCache {
         return await this.del(`starboard:config:${guildId}`);
     }
 
-    // Quarantine Records Cache (for active quarantines)
     async getActiveQuarantine(userId, guildId) {
         return await this.get(`quarantine:${guildId}:${userId}`);
     }
@@ -225,7 +209,6 @@ class RedisCache {
         return await this.del(`quarantine:${guildId}:${userId}`);
     }
 
-    // Rate Limiting Cache
     async getRateLimit(userId, commandType = 'global') {
         return await this.get(`ratelimit:${commandType}:${userId}`);
     }
@@ -248,7 +231,6 @@ class RedisCache {
         }
     }
 
-    // Cache Statistics
     async getCacheStats() {
         if (!this.isConnected) return null;
         try {
@@ -264,7 +246,6 @@ class RedisCache {
         }
     }
 
-    // Bulk operations
     async mget(keys) {
         if (!this.isConnected || !keys.length) return [];
         try {
@@ -295,12 +276,11 @@ class RedisCache {
         }
     }
 
-    // Clear all cache (use carefully)
     async flushAll() {
         if (!this.isConnected) return false;
         try {
             await this.client.flushall();
-            console.log('🧹 Redis cache cleared');
+            console.log('ðŸ§¹ Redis cache cleared');
             return true;
         } catch (error) {
             console.error('Redis flush error:', error);

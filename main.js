@@ -4,8 +4,6 @@ require('dotenv').config();
 
 console.log('🤖 Starting Discord Moderation Bot...');
 console.log('=====================================');
-
-// Initialize client
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -20,10 +18,6 @@ const client = new Client({
 });
 
 console.log('✅ Client initialized with intents and partials');
-
-// Legacy storage maps (FULLY DEPRECATED - all data now in DatabaseService)
-// const afkUsers = new Map(); // REMOVED: Now uses DatabaseService.getUserAFK()
-// const mentionLogs = new Map(); // REMOVED: Stored in AFK schema mentions array
 const starboardConfigs = new Map(); // ACTIVE: Loaded from database on startup
 const starboardMessages = new Map(); // ACTIVE: Maps originalMessageId -> starboardMessageId
 const customCommands = new Map(); // CACHED: Loaded from database, auto-refreshed
@@ -34,8 +28,6 @@ const autoReactions = new Map(); // DEPRECATED: Use DatabaseService auto reactio
 const antidoxxData = new Map(); // LEGACY: Consider moving to database
 const quarantineRecords = new Map(); // DEPRECATED: Use DatabaseService quarantine methods instead
 let reminderIdCounter = 1; // DEPRECATED: Use MongoDB ObjectId instead
-
-// Performance monitoring
 const performanceMetrics = {
     commandsProcessed: 0,
     averageResponseTime: 0,
@@ -60,23 +52,16 @@ const performanceMetrics = {
         };
     }
 };
-
-// Optimized periodic cleanup and monitoring
 setInterval(async () => {
     try {
-        // Log performance metrics and database stats
         if (performanceMetrics.commandsProcessed > 0) {
             const botStats = performanceMetrics.getStats();
             const dbStats = DatabaseService.getPerformanceStats ? DatabaseService.getPerformanceStats() : {};
             
             console.log('📊 Performance:', botStats);
             console.log('🗄️ Database:', dbStats);
-            
-            // Memory cleanup for legacy Maps (deprecated, data now in database)
             if (antidoxxData.size > 100) antidoxxData.clear(); // Cleanup old antidoxx data
         }
-        
-        // Trigger database cleanup every hour
         if (Date.now() % (60 * 60 * 1000) < 300000) { // Within 5 minutes of the hour
             await DatabaseService.cleanupExpiredData();
         }
@@ -84,54 +69,20 @@ setInterval(async () => {
         console.error('Error in periodic cleanup:', error);
     }
 }, 300000); // Every 5 minutes
-
-// Prefix for commands
 const PREFIX = '!';
 
-// =============================================================================
-// UTILITY FUNCTIONS
-// =============================================================================
-
-/**
- * Validates if a string is not empty and within length limits
- * @param {string} str - String to validate
- * @param {number} minLength - Minimum length (default: 1)
- * @param {number} maxLength - Maximum length (default: 2000)
- * @returns {boolean} - True if valid
- */
 function isValidString(str, minLength = 1, maxLength = 2000) {
     return typeof str === 'string' && str.trim().length >= minLength && str.length <= maxLength;
 }
 
-/**
- * Validates if a user ID is valid
- * @param {string} userId - User ID to validate
- * @returns {boolean} - True if valid
- */
 function isValidUserId(userId) {
     return typeof userId === 'string' && /^\d{17,19}$/.test(userId);
 }
 
-/**
- * Validates if a guild ID is valid
- * @param {string} guildId - Guild ID to validate
- * @returns {boolean} - True if valid
- */
 function isValidGuildId(guildId) {
     return typeof guildId === 'string' && /^\d{17,19}$/.test(guildId);
 }
 
-/**
- * Sanitizes user input by removing potentially harmful characters
- * @param {string} input - Input to sanitize
- * @returns {string} - Sanitized input
- */
-/**
- * Centralized error logging with context
- * @param {string} context - Where the error occurred
- * @param {Error} error - The error object
- * @param {Object} metadata - Additional context data
- */
 function logError(context, error, metadata = {}) {
     const timestamp = new Date().toISOString();
     console.error(`[${timestamp}] ERROR in ${context}:`, {
@@ -141,12 +92,6 @@ function logError(context, error, metadata = {}) {
     });
 }
 
-/**
- * Safe async function wrapper that handles errors gracefully
- * @param {Function} fn - Async function to wrap
- * @param {string} context - Context for error logging
- * @returns {Function} - Wrapped function
- */
 function safeAsync(fn, context) {
     return async (...args) => {
         try {
@@ -227,16 +172,10 @@ function isPrivateModeEnabled() {
 
 function canUseBot(member) {
     if (!isPrivateModeEnabled()) return true; // If not in private mode, allow everyone
-    
-    // Bot owners always have access
     if (isBotOwner(member.id)) return true;
-    
-    // Check if guild is authorized
     if (!isAuthorizedGuild(member.guild.id)) {
         return false;
     }
-    
-    // Check if user is authorized
     return isAuthorizedUser(member.id) || 
            member.guild.ownerId === member.id ||
            member.permissions.has(PermissionFlagsBits.Administrator);
@@ -279,8 +218,6 @@ async function getMutedRole(guild) {
             return null;
         }
     }
-    
-    // Always ensure permissions are set correctly for all channels
     await setupMutePermissions(guild, mutedRole);
     
     return mutedRole;
@@ -293,9 +230,7 @@ async function setupMutePermissions(guild, mutedRole) {
         
         for (const [channelId, channel] of channels) {
             try {
-                // Check if this channel type needs mute permissions
                 if (channel.type === 0 || channel.type === 2 || channel.type === 5 || channel.type === 13) { 
-                    // Text, Voice, Announcement, Stage channels
                     const permissions = {
                         SendMessages: false,
                         AddReactions: false,
@@ -304,8 +239,6 @@ async function setupMutePermissions(guild, mutedRole) {
                         CreatePrivateThreads: false,
                         UseApplicationCommands: false
                     };
-                    
-                    // Add voice-specific permissions for voice channels
                     if (channel.type === 2 || channel.type === 13) { // Voice or Stage channels
                         permissions.Speak = false;
                         permissions.Connect = false;
@@ -313,8 +246,6 @@ async function setupMutePermissions(guild, mutedRole) {
                         permissions.UseVAD = false;
                         permissions.RequestToSpeak = false;
                     }
-                    
-                    // Check if permissions are already set correctly
                     const existingOverwrite = channel.permissionOverwrites.cache.get(mutedRole.id);
                     let needsUpdate = !existingOverwrite;
                     
@@ -366,8 +297,6 @@ async function getQuarantinedRole(guild) {
             return null;
         }
     }
-    
-    // Always ensure permissions are set correctly for all channels
     await setupQuarantinePermissions(guild, quarantinedRole);
     
     return quarantinedRole;
@@ -377,13 +306,9 @@ async function setupQuarantinePermissions(guild, quarantinedRole) {
     try {
         const channels = await guild.channels.fetch();
         let updatedChannels = 0;
-        
-        // Find the quarantine channel to exclude it from restrictions
         const quarantineChannel = guild.channels.cache.find(channel => 
             channel.name === 'bundfaad-baat-chit' && channel.type === 0
         );
-        
-        // Filter channels that need quarantine permissions
         const relevantChannels = channels.filter(channel => 
             channel.type === 0 || channel.type === 2 || channel.type === 4 || 
             channel.type === 5 || channel.type === 13 || channel.type === 15
@@ -393,7 +318,6 @@ async function setupQuarantinePermissions(guild, quarantinedRole) {
         
         for (const [channelId, channel] of relevantChannels) {
             try {
-                // Skip the quarantine channel - quarantined users should be able to access it
                 if (quarantineChannel && channel.id === quarantineChannel.id) {
                     continue;
                 }
@@ -413,8 +337,6 @@ async function setupQuarantinePermissions(guild, quarantinedRole) {
                     RequestToSpeak: false,
                     ReadMessageHistory: false
                 };
-                
-                // Check if permissions need updating
                 const existingOverwrite = channel.permissionOverwrites.cache.get(quarantinedRole.id);
                 let needsUpdate = !existingOverwrite;
                 
@@ -439,8 +361,6 @@ async function setupQuarantinePermissions(guild, quarantinedRole) {
                 logError('setupQuarantinePermissions:channel', channelError, { channelName: channel.name });
             }
         }
-        
-        // Process all permission updates concurrently
         await Promise.allSettled(batchPromises);
         
         if (updatedChannels > 0) {
@@ -460,27 +380,22 @@ async function setupQuarantineSystem(guild) {
     };
     
     try {
-        // Get or create the quarantined role
         const quarantinedRole = await getQuarantinedRole(guild);
         if (!quarantinedRole) {
             result.error = 'Failed to create or find the quarantined role.';
             return result;
         }
-        
-        // Check if quarantine channel already exists
         let quarantineChannel = guild.channels.cache.find(channel => 
             channel.name === 'bundfaad-baat-chit' && channel.type === 0
         );
         
         if (!quarantineChannel) {
-            // Create the quarantine channel
             quarantineChannel = await guild.channels.create({
                 name: 'bundfaad-baat-chit',
                 type: 0, // Text channel
                 topic: 'Channel for quarantined users to communicate with moderators - bundfaad baat chit',
                 reason: 'Auto-created quarantine channel',
                 permissionOverwrites: [
-                    // Deny @everyone access
                     {
                         id: guild.roles.everyone.id,
                         deny: [
@@ -489,7 +404,6 @@ async function setupQuarantineSystem(guild) {
                             PermissionFlagsBits.ReadMessageHistory
                         ]
                     },
-                    // Allow quarantined users to view and send messages ONLY in this channel
                     {
                         id: quarantinedRole.id,
                         allow: [
@@ -512,16 +426,12 @@ async function setupQuarantineSystem(guild) {
             
             console.log(`✅ Created quarantine channel in ${guild.name}`);
         } else {
-            // Update existing quarantine channel permissions to ensure they're correct
             try {
-                // Ensure @everyone can't see it
                 await quarantineChannel.permissionOverwrites.edit(guild.roles.everyone.id, {
                     ViewChannel: false,
                     SendMessages: false,
                     ReadMessageHistory: false
                 });
-                
-                // Ensure quarantined users can access it
                 await quarantineChannel.permissionOverwrites.edit(quarantinedRole.id, {
                     ViewChannel: true,
                     SendMessages: true,
@@ -540,8 +450,6 @@ async function setupQuarantineSystem(guild) {
                 console.error('Error updating quarantine channel permissions:', permError);
             }
         }
-        
-        // Send/update welcome message to the quarantine channel (for both new and existing channels)
         try {
             const welcomeEmbed = new EmbedBuilder()
                 .setColor('#ff6b35')
@@ -561,8 +469,6 @@ async function setupQuarantineSystem(guild) {
                 )
                 .setFooter({ text: 'Quarantine system - Use responsibly' })
                 .setTimestamp();
-            
-            // Check if welcome message already exists (look for bot's embed message)
             const messages = await quarantineChannel.messages.fetch({ limit: 10 });
             const existingWelcome = messages.find(msg => 
                 msg.author.id === client.user.id && 
@@ -577,17 +483,11 @@ async function setupQuarantineSystem(guild) {
         } catch (welcomeError) {
             console.error('Error sending welcome message to quarantine channel:', welcomeError);
         }
-        
-        // Set up permissions for moderators, admins, owners, and authorized users
         const permissionUpdates = [];
-        
-        // Allow moderators (anyone with moderate members permission)
         try {
             await quarantineChannel.permissionOverwrites.edit(guild.roles.everyone, {
                 ViewChannel: false
             });
-            
-            // Find roles with moderate permissions and grant access
             const moderatorRoles = guild.roles.cache.filter(role => 
                 role.permissions.has(PermissionFlagsBits.ModerateMembers) ||
                 role.permissions.has(PermissionFlagsBits.BanMembers) ||
@@ -606,8 +506,6 @@ async function setupQuarantineSystem(guild) {
                     permissionUpdates.push(`Granted access to role: ${role.name}`);
                 }
             }
-            
-            // Allow server owner
             if (guild.ownerId) {
                 await quarantineChannel.permissionOverwrites.edit(guild.ownerId, {
                     ViewChannel: true,
@@ -618,8 +516,6 @@ async function setupQuarantineSystem(guild) {
                 });
                 permissionUpdates.push('Granted access to server owner');
             }
-            
-            // Allow authorized users and bot owners
             const authorizedUsers = process.env.AUTHORIZED_USERS?.split(',').map(id => id.trim()) || [];
             const botOwners = process.env.BOT_OWNERS?.split(',').map(id => id.trim()) || [];
             const allAuthorizedUsers = [...new Set([...authorizedUsers, ...botOwners])];
@@ -690,17 +586,11 @@ function createErrorEmbed(title, description) {
 function saveAllBotData() {
     try {
         console.log('💾 Database auto-saves data automatically...');
-        // With DatabaseService, data is automatically persisted to MongoDB
-        // No manual saving needed - data is saved immediately when modified
         console.log('✅ Database-powered bot - no manual saves needed');
     } catch (error) {
         console.error('❌ Error with database operations:', error);
     }
 }
-
-// =============================================================================
-// SERVER INFO HELPER FUNCTIONS
-// =============================================================================
 
 function getVerificationLevel(level) {
     const levels = {
@@ -713,21 +603,13 @@ function getVerificationLevel(level) {
     return levels[level] || `🔒 Level ${level}`;
 }
 
-// =============================================================================
-// STARBOARD FUNCTIONS
-// =============================================================================
-
 async function getStarboardConfig(guildId) {
     try {
-        // Check memory cache first
         if (starboardConfigs.has(guildId)) {
             return starboardConfigs.get(guildId);
         }
-        
-        // Fetch from database if not in cache
         const config = await DatabaseService.getStarboardConfig(guildId);
         if (config) {
-            // Cache it for future use
             const cacheConfig = {
                 channelId: config.channelId,
                 threshold: config.threshold || 3,
@@ -740,7 +622,6 @@ async function getStarboardConfig(guildId) {
         return null;
     } catch (error) {
         console.error('[Starboard] Failed to get starboard config:', error);
-        // Fallback to in-memory
         return starboardConfigs.get(guildId) || null;
     }
 }
@@ -770,18 +651,12 @@ function createStarboardEmbed(message, starCount) {
     return embed;
 }
 
-// =============================================================================
-// CUSTOM COMMAND FUNCTIONS
-// =============================================================================
-
 function getGuildCustomCommands(guildId) {
     if (!customCommands.has(guildId)) {
         customCommands.set(guildId, new Map());
     }
     return customCommands.get(guildId);
 }
-
-// Load all custom commands from database into memory on startup
 async function loadCustomCommandsFromDatabase() {
     try {
         console.log('🔄 Loading custom commands from database...');
@@ -808,16 +683,10 @@ async function loadCustomCommandsFromDatabase() {
         console.error('❌ Failed to load custom commands from database:', error);
     }
 }
-
-// Load all persistent data from database into memory on startup
 async function loadAllPersistentData() {
     try {
         console.log('🔄 Loading all persistent data from database...');
-        
-        // Load custom commands
         await loadCustomCommandsFromDatabase();
-        
-        // Load starboard configurations
         try {
             const configs = await DatabaseService.getAllStarboardConfigs();
             starboardConfigs.clear();
@@ -832,8 +701,6 @@ async function loadAllPersistentData() {
         } catch (error) {
             console.error('⚠️ Failed to load starboard configs:', error);
         }
-        
-        // Load starboard message mappings
         try {
             const mappings = await DatabaseService.getAllStarboardMessages();
             starboardMessages.clear();
@@ -844,17 +711,9 @@ async function loadAllPersistentData() {
         } catch (error) {
             console.error('⚠️ Failed to load starboard messages:', error);
         }
-        
-        // AFK data is loaded dynamically via DatabaseService calls (no memory cache needed)
         console.log('✅ AFK system ready (database-backed)');
-        
-        // Quarantine records are loaded dynamically via DatabaseService calls (no memory cache needed)
         console.log('✅ Quarantine system ready (database-backed)');
-        
-        // Auto reactions are loaded dynamically via DatabaseService calls (no memory cache needed)
         console.log('✅ Auto reactions system ready (database-backed)');
-        
-        // Reminders system - database methods ready, but conversion in progress
         console.log('✅ Reminder system ready (database methods available)');
         
         console.log('✅ All persistent data loaded successfully');
@@ -897,12 +756,7 @@ function processCustomCommandResponse(response, user, guild, channel) {
         .replace(/{datetime}/g, new Date().toLocaleString());
 }
 
-// =============================================================================
-// REMINDER FUNCTIONS
-// =============================================================================
-
 function parseReminderTime(timeString) {
-    // Check if it's a relative duration (e.g., "10m", "2h", "1d")
     const durationMatch = timeString.match(/^(\d+)([smhdw])$/);
     if (durationMatch) {
         const value = parseInt(durationMatch[1]);
@@ -917,8 +771,6 @@ function parseReminderTime(timeString) {
         
         return Date.now() + (value * multipliers[unit]);
     }
-    
-    // Check if it's an absolute date/time
     try {
         const date = new Date(timeString);
         if (isNaN(date.getTime())) return null;
@@ -960,8 +812,6 @@ async function createReminder(userId, guildId, channelId, message, timestamp, ty
         recurring,
         createdAt: Date.now()
     };
-    
-    // Save to database
     try {
         const dbReminderData = {
             userId,
@@ -975,25 +825,17 @@ async function createReminder(userId, guildId, channelId, message, timestamp, ty
         
         const savedReminder = await DatabaseService.createReminder(dbReminderData);
         if (savedReminder) {
-            // Use database ID for consistency
             reminderId = savedReminder._id.toString();
             reminderData._id = reminderId;
         }
     } catch (error) {
         console.error('Failed to save reminder to database:', error);
-        // Continue with in-memory only as fallback
     }
-    
-    // Add to in-memory storage for active management
     reminders.set(reminderId, reminderData);
-    
-    // Add to user's reminder list for quick access
     if (!userReminders.has(userId)) {
         userReminders.set(userId, new Set());
     }
     userReminders.get(userId).add(reminderId);
-    
-    // Schedule the reminder
     scheduleReminder(reminderId);
     
     return reminderId;
@@ -1005,17 +847,12 @@ function scheduleReminder(reminderId) {
     
     const delay = reminder.timestamp - Date.now();
     if (delay <= 0) {
-        // Trigger immediately if time has passed
         triggerReminder(reminderId);
         return;
     }
-    
-    // Clear existing timeout if any
     if (activeTimeouts.has(reminderId)) {
         clearTimeout(activeTimeouts.get(reminderId));
     }
-    
-    // Set new timeout
     const timeoutId = setTimeout(() => {
         triggerReminder(reminderId);
     }, delay);
@@ -1034,8 +871,6 @@ async function triggerReminder(reminderId) {
         const channel = guild.channels.cache.get(reminder.channelId);
         const user = await client.users.fetch(reminder.userId);
         if (!user) return;
-        
-        // Create reminder embed
         const embed = new EmbedBuilder()
             .setColor(reminder.type === 'event' ? '#ff6b6b' : '#4ecdc4')
             .setTitle(reminder.type === 'event' ? '📅 Event Reminder' : '⏰ Reminder')
@@ -1046,8 +881,6 @@ async function triggerReminder(reminderId) {
             )
             .setTimestamp()
             .setFooter({ text: `Reminder ID: ${reminderId}` });
-        
-        // Send in channel if available, otherwise DM
         if (channel) {
             await channel.send({ content: `<@${reminder.userId}>`, embeds: [embed] });
         } else {
@@ -1057,8 +890,6 @@ async function triggerReminder(reminderId) {
                 console.log(`Could not send reminder DM to ${user.tag}`);
             }
         }
-        
-        // Handle recurring reminders
         if (reminder.recurring) {
             const nextTimestamp = getNextRecurringTime(reminder.timestamp, reminder.recurring);
             if (nextTimestamp) {
@@ -1069,7 +900,6 @@ async function triggerReminder(reminderId) {
                 deleteReminder(reminderId);
             }
         } else {
-            // Delete one-time reminder
             deleteReminder(reminderId);
         }
         
@@ -1087,13 +917,9 @@ function getNextRecurringTime(currentTimestamp, recurring) {
     if (!intervalMs) return null;
     
     const nextTime = currentTimestamp + intervalMs;
-    
-    // Check if we've reached the end date
     if (recurring.endDate && nextTime > recurring.endDate) {
         return null;
     }
-    
-    // Check if we've reached the max occurrences
     if (recurring.maxOccurrences) {
         recurring.currentOccurrence = (recurring.currentOccurrence || 1) + 1;
         if (recurring.currentOccurrence > recurring.maxOccurrences) {
@@ -1107,22 +933,16 @@ function getNextRecurringTime(currentTimestamp, recurring) {
 function deleteReminder(reminderId) {
     const reminder = reminders.get(reminderId);
     if (!reminder) return;
-    
-    // Clear timeout
     if (activeTimeouts.has(reminderId)) {
         clearTimeout(activeTimeouts.get(reminderId));
         activeTimeouts.delete(reminderId);
     }
-    
-    // Remove from user's reminder list
     if (userReminders.has(reminder.userId)) {
         userReminders.get(reminder.userId).delete(reminderId);
         if (userReminders.get(reminder.userId).size === 0) {
             userReminders.delete(reminder.userId);
         }
     }
-    
-    // Remove from main storage
     reminders.delete(reminderId);
 }
 
@@ -1136,17 +956,12 @@ function getUserReminders(userId) {
         .sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// =============================================================================
-// AUTO-REACTION FUNCTIONS
-// =============================================================================
-
 async function getGuildAutoReactions(guildId) {
     try {
         const reactions = await DatabaseService.getGuildAutoReactions(guildId);
         return reactions;
     } catch (error) {
         console.error('Failed to get auto reactions from database:', error);
-        // Fallback to in-memory
         if (!autoReactions.has(guildId)) {
             autoReactions.set(guildId, new Map());
         }
@@ -1159,7 +974,6 @@ async function setAutoReaction(guildId, userId, emoji) {
         await DatabaseService.setAutoReaction(guildId, userId, emoji, true);
     } catch (error) {
         console.error('Failed to set auto reaction in database:', error);
-        // Fallback to in-memory
         const guildReactions = await getGuildAutoReactions(guildId);
         guildReactions.set(userId, { emoji, enabled: true });
         saveAutoReactionData();
@@ -1172,7 +986,6 @@ async function removeAutoReaction(guildId, userId) {
         return result;
     } catch (error) {
         console.error('Failed to remove auto reaction from database:', error);
-        // Fallback to in-memory
         const guildReactions = await getGuildAutoReactions(guildId);
         const result = guildReactions.delete(userId);
         if (result) saveAutoReactionData();
@@ -1186,7 +999,6 @@ async function toggleAutoReaction(guildId, userId) {
         return result;
     } catch (error) {
         console.error('Failed to toggle auto reaction in database:', error);
-        // Fallback to in-memory
         const guildReactions = await getGuildAutoReactions(guildId);
         const reaction = guildReactions.get(userId);
         if (reaction) {
@@ -1199,15 +1011,10 @@ async function toggleAutoReaction(guildId, userId) {
 }
 
 function isValidEmoji(emoji) {
-    // Check if it's a Unicode emoji
     const unicodeEmojiRegex = /^(\u00a9|\u00ae|[\u2000-\u3300]|\ud83c[\ud000-\udfff]|\ud83d[\ud000-\udfff]|\ud83e[\ud000-\udfff])$/;
     if (unicodeEmojiRegex.test(emoji)) return true;
-    
-    // Check if it's a custom emoji format <:name:id> or <a:name:id>
     const customEmojiRegex = /^<a?:[a-zA-Z0-9_]+:\d+>$/;
     if (customEmojiRegex.test(emoji)) return true;
-    
-    // Check if it's just an emoji name like :smile:
     const emojiNameRegex = /^:[a-zA-Z0-9_]+:$/;
     if (emojiNameRegex.test(emoji)) return true;
     
@@ -1216,16 +1023,11 @@ function isValidEmoji(emoji) {
 
 function saveAutoReactionData() {
     try {
-        // Data automatically saved to database
         console.log('💾 Auto-reaction data saved');
     } catch (error) {
         console.error('Error saving auto-reaction data:', error);
     }
 }
-
-// =============================================================================
-// QUARANTINE DATABASE FUNCTIONS
-// =============================================================================
 
 function generateQuarantineRecordId() {
     return `quar_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -1244,7 +1046,6 @@ async function addQuarantineRecord(guildId, userId, username, moderatorId, moder
     };
     
     try {
-        // Save to database
         const savedRecord = await DatabaseService.createQuarantineRecord(recordData);
         if (savedRecord) {
             console.log(`📝 Added quarantine record: ${action} for ${username} by ${moderatorUsername} in guild ${guildId}`);
@@ -1253,8 +1054,6 @@ async function addQuarantineRecord(guildId, userId, username, moderatorId, moder
     } catch (error) {
         console.error('Failed to save quarantine record to database:', error);
     }
-    
-    // Fallback to in-memory storage if database fails
     const recordId = generateQuarantineRecordId();
     const record = {
         recordId,
@@ -1267,8 +1066,6 @@ async function addQuarantineRecord(guildId, userId, username, moderatorId, moder
         timestamp: Date.now(),
         duration
     };
-    
-    // Get or create guild records for fallback
     if (!quarantineRecords.has(guildId)) {
         quarantineRecords.set(guildId, new Map());
     }
@@ -1282,34 +1079,24 @@ async function addQuarantineRecord(guildId, userId, username, moderatorId, moder
 
 async function getQuarantineHistory(guildId, userId = null, limit = 50) {
     try {
-        // Get records from database
         const records = await DatabaseService.getGuildQuarantineRecords(guildId, userId, limit);
         return records || [];
     } catch (error) {
         console.error('Failed to get quarantine history from database:', error);
-        
-        // Fallback to in-memory records
         const guildRecords = quarantineRecords.get(guildId);
         if (!guildRecords) return [];
         
         let records = Array.from(guildRecords.values());
-        
-        // Filter by user if specified
         if (userId) {
             records = records.filter(record => record.userId === userId);
         }
-        
-        // Sort by timestamp (newest first)
         records.sort((a, b) => b.timestamp - a.timestamp);
-        
-        // Limit results
         return records.slice(0, limit);
     }
 }
 
 async function getUserQuarantineStatus(guildId, userId) {
     try {
-        // Check database for active quarantine
         const activeQuarantine = await DatabaseService.getActiveQuarantine(userId, guildId);
         if (activeQuarantine) {
             return {
@@ -1322,8 +1109,6 @@ async function getUserQuarantineStatus(guildId, userId) {
         return { isQuarantined: false, lastAction: null };
     } catch (error) {
         console.error('Failed to get quarantine status from database:', error);
-        
-        // Fallback to in-memory records
         const guildRecords = quarantineRecords.get(guildId);
         if (!guildRecords) return { isQuarantined: false, lastAction: null };
         
@@ -1396,12 +1181,7 @@ function searchQuarantineRecords(guildId, query, searchType = 'all') {
     }).sort((a, b) => b.timestamp - a.timestamp);
 }
 
-// =============================================================================
-// SLASH COMMANDS
-// =============================================================================
-
 const commands = [
-    // Moderation commands
     new SlashCommandBuilder()
         .setName('kick')
         .setDescription('Kick a user from the server')
@@ -1511,8 +1291,6 @@ const commands = [
             option.setName('reason')
                 .setDescription('Reason for unfreezing')
                 .setRequired(false)),
-                
-    // Channel management
     new SlashCommandBuilder()
         .setName('lock')
         .setDescription('Lock a channel')
@@ -1574,8 +1352,6 @@ const commands = [
             option.setName('channel')
                 .setDescription('Channel to set slowmode (default: current channel)')
                 .setRequired(false)),
-                
-    // Utility commands
     new SlashCommandBuilder()
         .setName('ping')
         .setDescription('Check bot latency'),
@@ -1603,8 +1379,6 @@ const commands = [
     new SlashCommandBuilder()
         .setName('help')
         .setDescription('Show available commands'),
-        
-    // AFK system
     new SlashCommandBuilder()
         .setName('afk')
         .setDescription('Set your AFK status')
@@ -1612,8 +1386,6 @@ const commands = [
             option.setName('reason')
                 .setDescription('Reason for being AFK')
                 .setRequired(false)),
-                
-    // Starboard system
     new SlashCommandBuilder()
         .setName('starboard')
         .setDescription('Manage starboard system')
@@ -1653,8 +1425,6 @@ const commands = [
             subcommand
                 .setName('info')
                 .setDescription('Show starboard configuration')),
-                
-    // Custom commands
     new SlashCommandBuilder()
         .setName('custom')
         .setDescription('Manage custom commands')
@@ -1718,8 +1488,6 @@ const commands = [
                     option.setName('name')
                         .setDescription('Command name')
                         .setRequired(true))),
-                        
-    // Reminder system
     new SlashCommandBuilder()
         .setName('reminder')
         .setDescription('Manage reminders')
@@ -1803,8 +1571,6 @@ const commands = [
                     option.setName('id')
                         .setDescription('Reminder ID')
                         .setRequired(true))),
-                        
-    // Admin commands
     new SlashCommandBuilder()
         .setName('admin')
         .setDescription('Manage authorized users (Server Owner only)')
@@ -1828,8 +1594,6 @@ const commands = [
                     option.setName('user')
                         .setDescription('User to remove')
                         .setRequired(true))),
-                        
-    // Emoji commands
     new SlashCommandBuilder()
         .setName('emoji')
         .setDescription('Manage server emojis')
@@ -2005,15 +1769,9 @@ const commands = [
 
 module.exports = { client, commands };
 
-// =============================================================================
-// EVENT HANDLERS
-// =============================================================================
-
 client.once('ready', async () => {
     console.log(`✅ Bot is ready! Logged in as ${client.user.tag}`);
     console.log(`📊 Serving ${client.guilds.cache.size} servers with ${client.users.cache.size} users`);
-    
-    // Initialize database connection
     console.log('🔄 Initializing database connection...');
     try {
         const mongoUri = process.env.MONGODB_URI;
@@ -2033,19 +1791,11 @@ client.once('ready', async () => {
         console.error('❌ Database initialization failed:', error);
         console.log('⚠️ Bot will continue with limited functionality');
     }
-    
-    // Load all persistent data from database into memory for fast access
     await loadAllPersistentData();
     console.log('✅ Bot fully initialized with database support');
-
-    
-    // Optimized periodic data maintenance (reduced frequency since data is now real-time)
     setInterval(async () => {
         try {
-            // Only save legacy data that might still be in memory
             await saveAllBotData();
-            
-            // Check database health periodically
             const healthStatus = await DatabaseService.healthCheck();
             if (!healthStatus.mongodb || !healthStatus.redis) {
                 console.warn('⚠️ Database health check failed:', healthStatus);
@@ -2056,23 +1806,15 @@ client.once('ready', async () => {
             console.error('❌ Error in periodic maintenance:', error);
         }
     }, 10 * 60 * 1000); // Every 10 minutes (less frequent since database is real-time)
-    
-    // Enhanced cleanup on process exit
     const gracefulShutdown = async (signal) => {
         console.log(`🛑 Received ${signal}. Bot shutting down gracefully...`);
-        
-        // Clear all active timeouts to prevent memory leaks
         console.log(`🧹 Clearing ${activeTimeouts.size} active timeouts...`);
         for (const [reminderId, timeoutId] of activeTimeouts) {
             clearTimeout(timeoutId);
         }
         activeTimeouts.clear();
-        
-        // Save all data
         console.log('💾 Saving all data...');
         saveAllBotData();
-        
-        // Close client connection
         if (client.isReady()) {
             console.log('� Closing Discord connection...');
             await client.destroy();
@@ -2084,8 +1826,6 @@ client.once('ready', async () => {
     
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-    
-    // Handle uncaught exceptions
     process.on('uncaughtException', (error) => {
         logError('uncaughtException', error);
         gracefulShutdown('uncaughtException');
@@ -2094,11 +1834,7 @@ client.once('ready', async () => {
     process.on('unhandledRejection', (reason, promise) => {
         logError('unhandledRejection', new Error(reason), { promise });
     });
-    
-    // Auto-setup muted roles for all servers
     await autoSetupMutedRoles();
-    
-    // Ensure quarantine system is properly set up for all servers
     console.log('🔧 Setting up quarantine systems for all servers...');
     for (const [guildId, guild] of client.guilds.cache) {
         try {
@@ -2112,22 +1848,17 @@ client.once('ready', async () => {
             console.error(`Error setting up quarantine system for ${guild.name}:`, error);
         }
     }
-    
-    // Reschedule all reminders on startup
     let rescheduledCount = 0;
     for (const [reminderId, reminder] of reminders) {
         if (reminder.timestamp > Date.now()) {
             scheduleReminder(reminderId);
             rescheduledCount++;
         } else {
-            // Clean up expired reminders
             deleteReminder(reminderId);
         }
     }
     console.log(`🔄 Rescheduled ${rescheduledCount} active reminders`);
 });
-
-// Error handling
 client.on('error', error => {
     console.error('Discord client error:', error);
 });
@@ -2139,26 +1870,15 @@ client.on('warn', warning => {
 process.on('unhandledRejection', error => {
     console.error('Unhandled promise rejection:', error);
 });
-
-// Message event for prefix commands and AFK system
 client.on('messageCreate', async message => {
-    // Early returns for performance
     if (message.author.bot || !message.guild) return;
-    
-    // Privacy check - only respond if not in private mode or user is authorized
     if (isPrivateModeEnabled() && !canUseBot(message.member)) {
         return; // Silently ignore unauthorized users
     }
-    
-    // Performance: Start timing for metrics
     const startTime = Date.now();
-    
-    // Check if user is returning from AFK
     const afkData = await DatabaseService.getUserAFK(message.author.id, message.guild.id);
     if (afkData) {
         const timeAway = Date.now() - new Date(afkData.createdAt).getTime();
-        
-        // Clear AFK status from database
         await DatabaseService.removeUserAFK(message.author.id, message.guild.id);
         
         const embed = new EmbedBuilder()
@@ -2173,8 +1893,6 @@ client.on('messageCreate', async message => {
         } catch (error) {
             console.error('Error sending AFK return message:', error);
         }
-        
-        // Send DM with missed mentions if any
         const userMentions = afkData.mentions || [];
         if (userMentions.length > 0) {
             try {
@@ -2183,8 +1901,6 @@ client.on('messageCreate', async message => {
                     .setTitle('📨 Missed Mentions While AFK')
                     .setDescription(`You were mentioned **${userMentions.length}** time(s) while away:`)
                     .setFooter({ text: `Total AFK time: ${formatAfkDuration(new Date(afkData.createdAt).getTime())}` });
-                
-                // Group mentions by channel for better organization
                 const mentionsByChannel = {};
                 userMentions.forEach((mention) => {
                     const channelName = `<#${mention.channelId}>`;
@@ -2223,7 +1939,6 @@ client.on('messageCreate', async message => {
                 await message.author.send({ embeds: [mentionEmbed] });
             } catch (error) {
                 console.error('Error sending missed mentions DM:', error);
-                // Try to inform user in the channel if DM fails
                 try {
                     const dmFailEmbed = new EmbedBuilder()
                         .setColor('#ffa500')
@@ -2234,12 +1949,8 @@ client.on('messageCreate', async message => {
                     console.error('Error sending DM failure notification:', dmError);
                 }
             }
-            
-            // Mentions are now automatically handled in database
         }
     }
-    
-    // Check for mentions of AFK users
     if (message.mentions.users.size > 0) {
         for (const [userId, user] of message.mentions.users) {
             try {
@@ -2264,8 +1975,6 @@ client.on('messageCreate', async message => {
                     } catch (error) {
                         logError('AFK mention reply', error, { userId, guildId: message.guild.id });
                     }
-                    
-                    // Log mention in database
                     const mentionData = {
                         userId: message.author.id,
                         username: message.author.displayName,
@@ -2275,13 +1984,9 @@ client.on('messageCreate', async message => {
                     };
                     
                     await DatabaseService.addAFKMention(userId, message.guild.id, mentionData);
-                    
-                    // Get updated mention count from database for DM logic
                     const updatedAfkData = await DatabaseService.getUserAFK(userId, message.guild.id);
                     const userMentions = updatedAfkData?.mentions || [];
                     const recentMentions = userMentions.filter(m => Date.now() - new Date(m.timestamp).getTime() < 5 * 60 * 1000); // Last 5 minutes
-                    
-                    // Only send DM for first mention or every 5th mention to avoid spam
                     if (userMentions.length === 1 || userMentions.length % 5 === 0) {
                         try {
                             const dmEmbed = new EmbedBuilder()
@@ -2309,23 +2014,17 @@ client.on('messageCreate', async message => {
             }
         }
     }
-    
-    // Handle auto-reactions for user mentions
     if (message.mentions.users.size > 0 && !message.author.bot) {
         const guildReactions = await getGuildAutoReactions(message.guild.id);
         
         for (const [userId, user] of message.mentions.users) {
             if (guildReactions.has(userId)) {
                 const reactionData = guildReactions.get(userId);
-                
-                // Only react if auto-reaction is enabled
                 if (reactionData.enabled) {
                     try {
                         await message.react(reactionData.emoji);
                     } catch (error) {
                         console.error(`Error adding auto-reaction ${reactionData.emoji} for user ${user.tag}:`, error);
-                        
-                        // If the emoji is invalid, disable the auto-reaction
                         if (error.code === 10014 || error.message.includes('Unknown Emoji')) {
                             console.log(`Disabling invalid auto-reaction emoji for user ${user.tag}`);
                             reactionData.enabled = false;
@@ -2336,17 +2035,12 @@ client.on('messageCreate', async message => {
             }
         }
     }
-    
-    // Handle prefix commands
     if (!message.content.startsWith(PREFIX)) return;
     
     const args = message.content.slice(PREFIX.length).trim().split(/ +/);
     const commandName = args.shift().toLowerCase();
-    
-    // Check for custom commands first
     const guildCommands = getGuildCustomCommands(message.guild.id);
     if (guildCommands.has(commandName)) {
-        // Check if user has permission to use custom commands
         if (!hasCustomCommandPermissions(message.member)) {
             const embed = createErrorEmbed('Permission Denied', 'Only authorized users, server owners, and bot owners can use custom commands.');
             return message.reply({ embeds: [embed] });
@@ -2372,11 +2066,8 @@ client.on('messageCreate', async message => {
             } else {
                 await message.reply(processedResponse);
             }
-            
-            // Track command usage in database
             try {
                 await DatabaseService.incrementCommandUsage(message.guild.id, commandName);
-                // Update local cache
                 if (customCommand.useCount !== undefined) {
                     customCommand.useCount++;
                 } else {
@@ -2384,7 +2075,6 @@ client.on('messageCreate', async message => {
                 }
             } catch (usageError) {
                 console.error('Failed to track command usage:', usageError);
-                // Don't fail the command execution for tracking errors
             }
         } catch (error) {
             console.error('Error executing custom command:', error);
@@ -2392,8 +2082,6 @@ client.on('messageCreate', async message => {
         }
         return;
     }
-    
-    // Built-in prefix commands
     try {
         switch (commandName) {
             case 'kick':
@@ -2502,19 +2190,14 @@ client.on('messageCreate', async message => {
         console.error(`Error executing command ${commandName}:`, error);
         await message.reply('❌ An error occurred while executing the command.');
     } finally {
-        // Record performance metrics
         const duration = Date.now() - startTime;
         performanceMetrics.recordCommand(duration);
     }
 });
-
-// Slash command interaction handler
 client.on('interactionCreate', async interaction => {
     const startTime = Date.now();
     
     if (!interaction.isChatInputCommand()) return;
-    
-    // Privacy check - only respond if not in private mode or user is authorized
     if (isPrivateModeEnabled() && !canUseBot(interaction.member)) {
         const embed = new EmbedBuilder()
             .setColor('#ff4757')
@@ -2656,18 +2339,13 @@ client.on('interactionCreate', async interaction => {
             });
         }
     } finally {
-        // Record performance metrics
         const duration = Date.now() - startTime;
         performanceMetrics.recordCommand(duration);
     }
 });
-
-// Message reaction handlers for starboard
 client.on('messageReactionAdd', async (reaction, user) => {
     try {
         if (user.bot) return;
-        
-        // Fetch partial reactions
         if (reaction.partial) {
             try {
                 await reaction.fetch();
@@ -2676,8 +2354,6 @@ client.on('messageReactionAdd', async (reaction, user) => {
                 return;
             }
         }
-        
-        // Fetch partial messages
         if (reaction.message.partial) {
             try {
                 await reaction.message.fetch();
@@ -2698,8 +2374,6 @@ client.on('messageReactionAdd', async (reaction, user) => {
 client.on('messageReactionRemove', async (reaction, user) => {
     try {
         if (user.bot) return;
-        
-        // Fetch partial reactions
         if (reaction.partial) {
             try {
                 await reaction.fetch();
@@ -2708,8 +2382,6 @@ client.on('messageReactionRemove', async (reaction, user) => {
                 return;
             }
         }
-        
-        // Fetch partial messages
         if (reaction.message.partial) {
             try {
                 await reaction.message.fetch();
@@ -2726,11 +2398,8 @@ client.on('messageReactionRemove', async (reaction, user) => {
         console.error('Error in messageReactionRemove:', error);
     }
 });
-
-// Handle message deletion to clean up starboard
 client.on('messageDelete', async (message) => {
     try {
-        // Handle partial messages
         if (message.partial) {
             try {
                 await message.fetch();
@@ -2738,12 +2407,8 @@ client.on('messageDelete', async (message) => {
                 console.log('[Starboard] Could not fetch partial deleted message, using cached data');
             }
         }
-
-        // Check if this message was on the starboard
         if (starboardMessages.has(message.id)) {
             const starboardMessageId = starboardMessages.get(message.id);
-            
-            // Get config from memory or database
             let config = starboardConfigs.get(message.guild?.id);
             if (!config && message.guild) {
                 config = await getStarboardConfig(message.guild.id);
@@ -2753,7 +2418,6 @@ client.on('messageDelete', async (message) => {
                 try {
                     const starboardChannel = await message.guild.channels.fetch(config.channelId);
                     if (starboardChannel) {
-                        // Delete the starboard message
                         const starboardMsg = await starboardChannel.messages.fetch(starboardMessageId).catch(() => null);
                         if (starboardMsg) {
                             await starboardMsg.delete();
@@ -2764,8 +2428,6 @@ client.on('messageDelete', async (message) => {
                     console.error('[Starboard] Error deleting starboard message:', error);
                 }
             }
-            
-            // Remove from tracking
             starboardMessages.delete(message.id);
             if (message.guild) {
                 await DatabaseService.deleteStarboardMessage(message.guild.id, message.id);
@@ -2775,8 +2437,6 @@ client.on('messageDelete', async (message) => {
         console.error('[Starboard] Error in messageDelete handler:', error);
     }
 });
-
-// Auto-setup mute and quarantine permissions for new channels
 client.on('channelCreate', async (channel) => {
     try {
         if (channel.guild) {
@@ -2784,7 +2444,6 @@ client.on('channelCreate', async (channel) => {
             const quarantinedRole = channel.guild.roles.cache.find(role => role.name === 'Quarantined');
             
             if (mutedRole) {
-                // Set mute permissions for the new channel
                 if (channel.type === 0 || channel.type === 2 || channel.type === 5 || channel.type === 13) {
                     const permissions = {
                         SendMessages: false,
@@ -2794,8 +2453,6 @@ client.on('channelCreate', async (channel) => {
                         CreatePrivateThreads: false,
                         UseApplicationCommands: false
                     };
-                    
-                    // Add voice-specific permissions for voice channels
                     if (channel.type === 2 || channel.type === 13) { // Voice or Stage channels
                         permissions.Speak = false;
                         permissions.Connect = false;
@@ -2813,7 +2470,6 @@ client.on('channelCreate', async (channel) => {
             }
             
             if (quarantinedRole) {
-                // Set quarantine permissions for the new channel
                 if (channel.type === 0 || channel.type === 2 || channel.type === 4 || channel.type === 5 || channel.type === 13 || channel.type === 15) {
                     const permissions = {
                         ViewChannel: false,
@@ -2843,27 +2499,18 @@ client.on('channelCreate', async (channel) => {
         console.error('Error setting up moderation permissions for new channel:', error);
     }
 });
-
-// Handle nickname changes to enforce frozen nicknames
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
     try {
-        // Check if nickname changed
         if (oldMember.nickname === newMember.nickname) {
             return; // No nickname change
         }
-
-        // Check if this user's nickname is frozen
         const frozenData = await DatabaseService.getFrozenNickname(newMember.id, newMember.guild.id);
         
         if (frozenData && frozenData.active) {
             const frozenNickname = frozenData.frozenNickname;
-            
-            // If nickname was changed to something other than frozen nickname, revert it
             if (newMember.nickname !== frozenNickname) {
                 try {
                     await newMember.setNickname(frozenNickname, 'Nickname is frozen by moderator');
-                    
-                    // Try to DM the user about the frozen nickname
                     try {
                         const dmEmbed = new EmbedBuilder()
                             .setColor('#ffa500')
@@ -2878,7 +2525,6 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 
                         await newMember.user.send({ embeds: [dmEmbed] });
                     } catch (dmError) {
-                        // Silently fail DM if user has DMs disabled
                         logError('guildMemberUpdate - Frozen nick DM', dmError, { userId: newMember.id });
                     }
                 } catch (error) {
@@ -2890,12 +2536,6 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
         logError('guildMemberUpdate', error, { userId: newMember.id, guildId: newMember.guild.id });
     }
 });
-
-// =============================================================================
-// COMMAND HANDLERS
-// =============================================================================
-
-// Moderation command handlers
 async function handleKickCommand(message, args) {
     if (!hasModeratorPermissions(message.member)) {
         return message.reply('❌ You need moderator permissions to use this command.');
@@ -2990,7 +2630,6 @@ async function handleBanCommand(message, args) {
     const reason = args.slice(1).join(' ') || 'No reason provided';
     
     try {
-        // Try to DM the user before banning them
         try {
             const dmEmbed = new EmbedBuilder()
                 .setColor('#ff4757')
@@ -3041,7 +2680,6 @@ async function handleBanSlash(interaction) {
     }
     
     try {
-        // Try to DM the user before banning them
         try {
             const dmEmbed = new EmbedBuilder()
                 .setColor('#ff4757')
@@ -3084,8 +2722,6 @@ async function handleUnbanCommand(message, args) {
     if (!userId) {
         return message.reply('❌ Please provide a user ID to unban.\nExample: `!unban 123456789012345678`');
     }
-    
-    // Validate user ID format
     if (!/^\d{17,19}$/.test(userId)) {
         return message.reply('❌ Invalid user ID format. User IDs should be 17-19 digits.');
     }
@@ -3093,7 +2729,6 @@ async function handleUnbanCommand(message, args) {
     const reason = args.slice(1).join(' ') || 'No reason provided';
     
     try {
-        // Check if user is actually banned
         const bans = await message.guild.bans.fetch();
         const bannedUser = bans.get(userId);
         
@@ -3124,8 +2759,6 @@ async function handleUnbanSlash(interaction) {
     
     const userId = interaction.options.getString('userid');
     const reason = interaction.options.getString('reason') || 'No reason provided';
-    
-    // Validate user ID format
     if (!/^\d{17,19}$/.test(userId)) {
         return interaction.reply({ 
             embeds: [createErrorEmbed('Invalid User ID', 'User IDs should be 17-19 digits.')], 
@@ -3134,7 +2767,6 @@ async function handleUnbanSlash(interaction) {
     }
     
     try {
-        // Check if user is actually banned
         const bans = await interaction.guild.bans.fetch();
         const bannedUser = bans.get(userId);
         
@@ -3171,8 +2803,6 @@ async function handleSetupMuteSlash(interaction) {
     
     try {
         await interaction.deferReply();
-        
-        // Get or create muted role and set up permissions
         const mutedRole = await getMutedRole(interaction.guild);
         
         if (!mutedRole) {
@@ -3214,8 +2844,6 @@ async function handleSetupQuarantineCommand(message) {
             .setTimestamp();
         
         const statusMessage = await message.reply({ embeds: [embed] });
-        
-        // Set up the quarantine system
         const result = await setupQuarantineSystem(message.guild);
         
         if (!result.success) {
@@ -3273,8 +2901,6 @@ async function handleSetupQuarantineSlash(interaction) {
             .setTimestamp();
         
         await interaction.reply({ embeds: [embed] });
-        
-        // Set up the quarantine system
         const result = await setupQuarantineSystem(interaction.guild);
         
         if (!result.success) {
@@ -3353,8 +2979,6 @@ async function handleMuteCommand(message, args) {
     
     try {
         await member.roles.add(mutedRole, reason);
-        
-        // Set timeout to unmute
         setTimeout(async () => {
             try {
                 await member.roles.remove(mutedRole, 'Mute duration expired');
@@ -3426,8 +3050,6 @@ async function handleMuteSlash(interaction) {
     
     try {
         await member.roles.add(mutedRole, reason);
-        
-        // Set timeout to unmute
         setTimeout(async () => {
             try {
                 await member.roles.remove(mutedRole, 'Mute duration expired');
@@ -3536,8 +3158,6 @@ async function handleWarnCommand(message, args) {
             `**${user.tag}** has been warned.\n**Reason:** ${reason}`
         );
         await message.reply({ embeds: [embed] });
-        
-        // Try to DM the user
         try {
             const dmEmbed = new EmbedBuilder()
                 .setColor('#ffa500')
@@ -3572,8 +3192,6 @@ async function handleWarnSlash(interaction) {
             `**${user.tag}** has been warned.\n**Reason:** ${reason}`
         );
         await interaction.reply({ embeds: [embed] });
-        
-        // Try to DM the user
         try {
             const dmEmbed = new EmbedBuilder()
                 .setColor('#ffa500')
@@ -3617,12 +3235,9 @@ async function handleQuarantineCommand(message, args) {
     if (!quarantinedRole) {
         return message.reply('❌ Could not create or find quarantined role.');
     }
-    
-    // Ensure quarantine system is properly set up (including channel permissions)
     const quarantineSetup = await setupQuarantineSystem(message.guild);
     if (!quarantineSetup.success) {
         console.error('Quarantine system setup failed:', quarantineSetup.error);
-        // Continue anyway - role permissions should still work
     }
     
     if (member.roles.cache.has(quarantinedRole.id)) {
@@ -3632,7 +3247,6 @@ async function handleQuarantineCommand(message, args) {
     const reason = args.slice(1).join(' ') || 'No reason provided';
     
     try {
-        // Try to DM the user before quarantining them
         try {
             const dmEmbed = new EmbedBuilder()
                 .setColor('#ff0000')
@@ -3652,8 +3266,6 @@ async function handleQuarantineCommand(message, args) {
         }
         
         await member.roles.add(quarantinedRole, reason);
-        
-        // Add quarantine record to database
         await addQuarantineRecord(
             message.guild.id,
             user.id,
@@ -3676,7 +3288,6 @@ async function handleQuarantineCommand(message, args) {
 }
 
 async function handleQuarantineSlash(interaction) {
-    // Add defer reply immediately to prevent timeout
     try {
         await interaction.deferReply();
     } catch (error) {
@@ -3712,12 +3323,9 @@ async function handleQuarantineSlash(interaction) {
             embeds: [createErrorEmbed('Quarantined Role Error', 'Could not create or find quarantined role.')] 
         });
     }
-    
-    // Ensure quarantine system is properly set up (including channel permissions)
     const quarantineSetup = await setupQuarantineSystem(interaction.guild);
     if (!quarantineSetup.success) {
         console.error('Quarantine system setup failed:', quarantineSetup.error);
-        // Continue anyway - role permissions should still work
     }
     
     if (member.roles.cache.has(quarantinedRole.id)) {
@@ -3727,7 +3335,6 @@ async function handleQuarantineSlash(interaction) {
     }
     
     try {
-        // Try to DM the user before quarantining them
         try {
             const dmEmbed = new EmbedBuilder()
                 .setColor('#ff0000')
@@ -3747,8 +3354,6 @@ async function handleQuarantineSlash(interaction) {
         }
         
         await member.roles.add(quarantinedRole, reason);
-        
-        // Add quarantine record to database
         await addQuarantineRecord(
             interaction.guild.id,
             user.id,
@@ -3796,8 +3401,6 @@ async function handleUnquarantineCommand(message, args) {
     
     try {
         await member.roles.remove(quarantinedRole, reason);
-        
-        // Add unquarantine record to database
         await addQuarantineRecord(
             message.guild.id,
             user.id,
@@ -3807,8 +3410,6 @@ async function handleUnquarantineCommand(message, args) {
             reason,
             'unquarantine'
         );
-        
-        // Try to DM the user about being unquarantined
         try {
             const dmEmbed = new EmbedBuilder()
                 .setColor('#00ff00')
@@ -3838,7 +3439,6 @@ async function handleUnquarantineCommand(message, args) {
 }
 
 async function handleUnquarantineSlash(interaction) {
-    // Add defer reply immediately to prevent timeout
     try {
         await interaction.deferReply();
     } catch (error) {
@@ -3871,8 +3471,6 @@ async function handleUnquarantineSlash(interaction) {
     
     try {
         await member.roles.remove(quarantinedRole, reason);
-        
-        // Add unquarantine record to database
         await addQuarantineRecord(
             interaction.guild.id,
             user.id,
@@ -3882,8 +3480,6 @@ async function handleUnquarantineSlash(interaction) {
             reason,
             'unquarantine'
         );
-        
-        // Try to DM the user about being unquarantined
         try {
             const dmEmbed = new EmbedBuilder()
                 .setColor('#00ff00')
@@ -3965,7 +3561,6 @@ async function handleQuarantineInfoCommand(message, args) {
 }
 
 async function handleQuarantineInfoSlash(interaction) {
-    // Add defer reply immediately to prevent timeout
     try {
         await interaction.deferReply();
     } catch (error) {
@@ -4011,8 +3606,6 @@ async function handleQuarantineInfoSlash(interaction) {
         });
     }
 }
-
-// Helper functions for quarantine info display
 async function showUserQuarantineHistory(message, user) {
     const history = getQuarantineHistory(message.guild.id, user.id, 10);
     const status = getUserQuarantineStatus(message.guild.id, user.id);
@@ -4210,8 +3803,6 @@ async function handleClearCommand(message, args) {
             `Successfully deleted ${deleted.size - 1} messages.`
         );
         const reply = await message.channel.send({ embeds: [embed] });
-        
-        // Delete confirmation message after 5 seconds
         setTimeout(() => {
             reply.delete().catch(() => {});
         }, 5000);
@@ -4233,47 +3824,31 @@ async function handleFreezeNickCommand(message, args) {
         }
 
         const targetMember = await message.guild.members.fetch(targetUser.id);
-        
-        // Check if bot can manage the target member
         if (!targetMember.manageable) {
             return message.reply('❌ I cannot manage this user\'s nickname (they may have a higher role than me).');
         }
-
-        // Check if target is higher than moderator
         if (targetMember.roles.highest.position >= message.member.roles.highest.position && message.guild.ownerId !== message.author.id) {
             return message.reply('❌ You cannot freeze the nickname of someone with equal or higher roles.');
         }
-
-        // Parse args: first is mention, rest could be nickname or reason
         const argsWithoutMention = args.slice(1);
         let customNickname = null;
         let reason = 'No reason provided';
-
-        // Check if a custom nickname is provided (if starts with quotes or first arg doesn't look like a reason)
         if (argsWithoutMention.length > 0) {
-            // Simple heuristic: if it doesn't start with common reason words, treat as nickname
             const potentialNick = argsWithoutMention[0];
             if (argsWithoutMention.length === 1) {
-                // Single arg could be either nickname or reason
                 customNickname = potentialNick;
             } else if (potentialNick.length <= 32) {
-                // Likely a nickname if reasonable length
                 customNickname = potentialNick;
                 reason = argsWithoutMention.slice(1).join(' ');
             } else {
-                // Too long for nickname, treat all as reason
                 reason = argsWithoutMention.join(' ');
             }
         }
-
-        // Validate custom nickname length
         if (customNickname && customNickname.length > 32) {
             return message.reply('❌ Nicknames must be 32 characters or less.');
         }
 
         const nicknameToFreeze = customNickname || targetMember.nickname || targetUser.username;
-
-        // Set the nickname if custom one provided
         if (customNickname && customNickname !== targetMember.nickname) {
             try {
                 await targetMember.setNickname(customNickname, `Nickname frozen by ${message.author.tag}: ${reason}`);
@@ -4282,8 +3857,6 @@ async function handleFreezeNickCommand(message, args) {
                 return message.reply('❌ Failed to set the nickname. Please check bot permissions.');
             }
         }
-
-        // Save to database
         const success = await DatabaseService.freezeNickname(
             targetUser.id,
             message.guild.id,
@@ -4311,8 +3884,6 @@ async function handleFreezeNickCommand(message, args) {
             .setTimestamp();
 
         await message.reply({ embeds: [embed] });
-
-        // Try to DM the user
         try {
             const dmEmbed = new EmbedBuilder()
                 .setColor('#ffa500')
@@ -4352,8 +3923,6 @@ async function handleUnfreezeNickCommand(message, args) {
         const reason = args.slice(1).join(' ') || 'No reason provided';
 
         console.log(`[UnfreezeNick] Attempting to unfreeze ${targetUser.tag} (${targetUser.id}) in guild ${message.guild.id}`);
-
-        // Check if nickname is frozen
         const frozenData = await DatabaseService.getFrozenNickname(targetUser.id, message.guild.id);
         console.log(`[UnfreezeNick] Frozen data:`, frozenData);
         
@@ -4361,8 +3930,6 @@ async function handleUnfreezeNickCommand(message, args) {
             console.log(`[UnfreezeNick] User ${targetUser.tag} is not frozen`);
             return message.reply('❌ This user\'s nickname is not currently frozen.');
         }
-
-        // Remove from database
         const success = await DatabaseService.unfreezeNickname(targetUser.id, message.guild.id);
         console.log(`[UnfreezeNick] Database removal success: ${success}`);
 
@@ -4388,8 +3955,6 @@ async function handleUnfreezeNickCommand(message, args) {
             .setTimestamp();
 
         await message.reply({ embeds: [embed] });
-
-        // Try to DM the user
         try {
             const dmEmbed = new EmbedBuilder()
                 .setColor('#4ecdc4')
@@ -4442,7 +4007,6 @@ async function handleClearSlash(interaction) {
 
 async function handleFreezeNickSlash(interaction) {
     try {
-        // Check permissions
         if (!hasModeratorPermissions(interaction.member)) {
             return interaction.reply({ 
                 embeds: [createErrorEmbed('Permission Denied', 'You need moderator permissions to use this command.')], 
@@ -4454,24 +4018,18 @@ async function handleFreezeNickSlash(interaction) {
         const targetMember = await interaction.guild.members.fetch(targetUser.id);
         const customNickname = interaction.options.getString('nickname');
         const reason = interaction.options.getString('reason') || 'No reason provided';
-
-        // Check if bot can manage the target member
         if (!targetMember.manageable) {
             return interaction.reply({ 
                 embeds: [createErrorEmbed('Permission Error', 'I cannot manage this user\'s nickname (they may have a higher role than me).')], 
                 flags: MessageFlags.Ephemeral 
             });
         }
-
-        // Check if target is higher than moderator
         if (targetMember.roles.highest.position >= interaction.member.roles.highest.position && interaction.guild.ownerId !== interaction.user.id) {
             return interaction.reply({ 
                 embeds: [createErrorEmbed('Permission Denied', 'You cannot freeze the nickname of someone with equal or higher roles.')], 
                 flags: MessageFlags.Ephemeral 
             });
         }
-
-        // Validate custom nickname length
         if (customNickname && customNickname.length > 32) {
             return interaction.reply({ 
                 embeds: [createErrorEmbed('Invalid Nickname', 'Nicknames must be 32 characters or less.')], 
@@ -4480,8 +4038,6 @@ async function handleFreezeNickSlash(interaction) {
         }
 
         const nicknameToFreeze = customNickname || targetMember.nickname || targetUser.username;
-
-        // Set the nickname if custom one provided
         if (customNickname && customNickname !== targetMember.nickname) {
             try {
                 await targetMember.setNickname(customNickname, `Nickname frozen by ${interaction.user.tag}: ${reason}`);
@@ -4493,8 +4049,6 @@ async function handleFreezeNickSlash(interaction) {
                 });
             }
         }
-
-        // Save to database
         const success = await DatabaseService.freezeNickname(
             targetUser.id,
             interaction.guild.id,
@@ -4525,8 +4079,6 @@ async function handleFreezeNickSlash(interaction) {
             .setTimestamp();
 
         await interaction.reply({ embeds: [embed] });
-
-        // Try to DM the user
         try {
             const dmEmbed = new EmbedBuilder()
                 .setColor('#ffa500')
@@ -4556,7 +4108,6 @@ async function handleFreezeNickSlash(interaction) {
 
 async function handleUnfreezeNickSlash(interaction) {
     try {
-        // Check permissions
         if (!hasModeratorPermissions(interaction.member)) {
             console.log(`[UnfreezeNick] Permission denied for ${interaction.user.tag}`);
             return interaction.reply({ 
@@ -4569,8 +4120,6 @@ async function handleUnfreezeNickSlash(interaction) {
         const reason = interaction.options.getString('reason') || 'No reason provided';
 
         console.log(`[UnfreezeNick] Attempting to unfreeze ${targetUser.tag} (${targetUser.id}) in guild ${interaction.guild.id}`);
-
-        // Check if nickname is frozen
         const frozenData = await DatabaseService.getFrozenNickname(targetUser.id, interaction.guild.id);
         console.log(`[UnfreezeNick] Frozen data:`, frozenData);
         
@@ -4581,8 +4130,6 @@ async function handleUnfreezeNickSlash(interaction) {
                 flags: MessageFlags.Ephemeral 
             });
         }
-
-        // Remove from database
         const success = await DatabaseService.unfreezeNickname(targetUser.id, interaction.guild.id);
         console.log(`[UnfreezeNick] Database removal success: ${success}`);
 
@@ -4611,8 +4158,6 @@ async function handleUnfreezeNickSlash(interaction) {
             .setTimestamp();
 
         await interaction.reply({ embeds: [embed] });
-
-        // Try to DM the user
         try {
             const dmEmbed = new EmbedBuilder()
                 .setColor('#4ecdc4')
@@ -4638,8 +4183,6 @@ async function handleUnfreezeNickSlash(interaction) {
         }).catch(() => {});
     }
 }
-
-// Missing command handlers
 async function handlePingCommand(message) {
     const sent = await message.reply('🏓 Pinging...');
     const messageLatency = sent.createdTimestamp - message.createdTimestamp;
@@ -4706,17 +4249,11 @@ function formatUptime(seconds) {
 async function handleAfkCommand(message, args) {
     try {
         const reason = args.join(' ') || 'No reason provided';
-        
-        // Validate reason length
         if (reason.length > 500) {
             const embed = createErrorEmbed('Invalid Reason', 'AFK reason must be 500 characters or less.');
             return message.reply({ embeds: [embed] });
         }
-        
-        // Sanitize input
         const sanitizedReason = sanitizeInput(reason);
-        
-        // Check if user is already AFK
         const currentAfk = await DatabaseService.getUserAFK(message.author.id, message.guild.id);
         if (currentAfk) {
             const embed = new EmbedBuilder()
@@ -4731,8 +4268,6 @@ async function handleAfkCommand(message, args) {
             
             return message.reply({ embeds: [embed] });
         }
-        
-        // Set AFK status in database
         const success = await DatabaseService.setUserAFK(message.author.id, message.guild.id, sanitizedReason);
         
         if (!success) {
@@ -4762,7 +4297,6 @@ async function handleAfkCommand(message, args) {
 
 async function handleAfkSlash(interaction) {
     try {
-        // Check if this is a subcommand
         if (interaction.options.getSubcommand) {
             try {
                 const subcommand = interaction.options.getSubcommand();
@@ -4781,11 +4315,8 @@ async function handleAfkSlash(interaction) {
                         });
                 }
             } catch (error) {
-                // No subcommand, treat as regular AFK set
             }
         }
-        
-        // Default behavior - set AFK status
         return await handleAfkSetSlash(interaction);
     } catch (error) {
         logError('handleAfkSlash', error, { userId: interaction.user.id, guildId: interaction.guild.id });
@@ -4797,17 +4328,11 @@ async function handleAfkSlash(interaction) {
 async function handleAfkSetSlash(interaction) {
     try {
         const reason = interaction.options.getString('reason') || 'No reason provided';
-        
-        // Validate reason length
         if (reason.length > 500) {
             const embed = createErrorEmbed('Invalid Reason', 'AFK reason must be 500 characters or less.');
             return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
         }
-        
-        // Sanitize input
         const sanitizedReason = sanitizeInput(reason);
-        
-        // Check if user is already AFK using DatabaseService
         const currentAfk = await DatabaseService.getUserAFK(interaction.user.id, interaction.guild.id);
         if (currentAfk) {
             const embed = new EmbedBuilder()
@@ -4822,8 +4347,6 @@ async function handleAfkSetSlash(interaction) {
             
             return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
         }
-        
-        // Set AFK status in database
         const success = await DatabaseService.setUserAFK(interaction.user.id, interaction.guild.id, sanitizedReason);
         
         if (!success) {
@@ -4878,14 +4401,10 @@ async function handleAfkClearSlash(interaction) {
                 { name: 'Total AFK Time', value: formatAfkDuration(new Date(afkData.createdAt).getTime()), inline: true }
             )
             .setTimestamp();
-        
-        // Check for missed mentions from database
         const userMentions = afkData.mentions || [];
         if (userMentions.length > 0) {
             embed.addFields({ name: '📨 Missed Mentions', value: `${userMentions.length} mention(s) while away`, inline: true });
             embed.setFooter({ text: 'Check your DMs for missed mentions summary' });
-            
-            // Send missed mentions DM
             try {
                 const mentionEmbed = new EmbedBuilder()
                     .setColor('#4ecdc4')
@@ -4921,7 +4440,6 @@ async function handleAfkClearSlash(interaction) {
 
 async function handleAfkListSlash(interaction) {
     try {
-        // Get all AFK users from database for this guild
         const guildAfkUsers = await DatabaseService.getGuildAFKUsers(interaction.guild.id);
         
         if (guildAfkUsers.length === 0) {
@@ -4932,8 +4450,6 @@ async function handleAfkListSlash(interaction) {
             
             return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
         }
-        
-        // Sort by AFK duration (longest first)
         guildAfkUsers.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
         
         const embed = new EmbedBuilder()
@@ -4941,8 +4457,6 @@ async function handleAfkListSlash(interaction) {
             .setTitle('💤 Currently AFK Users')
             .setDescription(`${guildAfkUsers.length} user(s) are currently AFK in this server:`)
             .setTimestamp();
-        
-        // Fetch user details and add to embed
         for (let i = 0; i < Math.min(guildAfkUsers.length, 10); i++) {
             const afkUser = guildAfkUsers[i];
             try {
@@ -4954,7 +4468,6 @@ async function handleAfkListSlash(interaction) {
                     inline: true
                 });
             } catch (error) {
-                // User not in guild or fetch failed, skip
                 logError('handleAfkListSlash member fetch', error, { userId: afkUser.userId });
             }
         }
@@ -4998,14 +4511,10 @@ async function handleAfkClearCommand(message) {
                 { name: 'Total AFK Time', value: formatAfkDuration(new Date(afkData.createdAt).getTime()), inline: true }
             )
             .setTimestamp();
-        
-        // Check for missed mentions from database
         const userMentions = afkData.mentions || [];
         if (userMentions.length > 0) {
             embed.addFields({ name: '📨 Missed Mentions', value: `${userMentions.length} mention(s) while away`, inline: true });
             embed.setFooter({ text: 'Check your DMs for missed mentions summary' });
-            
-            // Send missed mentions DM
             try {
                 const mentionEmbed = new EmbedBuilder()
                     .setColor('#4ecdc4')
@@ -5041,7 +4550,6 @@ async function handleAfkClearCommand(message) {
 
 async function handleAfkListCommand(message) {
     try {
-        // Get all AFK users from database for this guild
         const guildAfkUsers = await DatabaseService.getGuildAFKUsers(message.guild.id);
         
         if (guildAfkUsers.length === 0) {
@@ -5052,8 +4560,6 @@ async function handleAfkListCommand(message) {
             
             return message.reply({ embeds: [embed] });
         }
-        
-        // Sort by AFK duration (longest first)
         guildAfkUsers.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
         
         const embed = new EmbedBuilder()
@@ -5061,8 +4567,6 @@ async function handleAfkListCommand(message) {
             .setTitle('💤 Currently AFK Users')
             .setDescription(`${guildAfkUsers.length} user(s) are currently AFK in this server:`)
             .setTimestamp();
-        
-        // Fetch user details and add to embed
         for (let i = 0; i < Math.min(guildAfkUsers.length, 10); i++) {
             const afkUser = guildAfkUsers[i];
             try {
@@ -5074,7 +4578,6 @@ async function handleAfkListCommand(message) {
                     inline: true
                 });
             } catch (error) {
-                // User not in guild or fetch failed, skip
                 logError('handleAfkListCommand member fetch', error, { userId: afkUser.userId });
             }
         }
@@ -5096,17 +4599,11 @@ async function handleServerInfoCommand(message) {
     
     try {
         const owner = await guild.fetchOwner();
-        
-        // Fetch all members for accurate statistics
         await guild.members.fetch();
-        
-        // Calculate member statistics
         const allMembers = guild.members.cache;
         const totalMembers = allMembers.size;
         const humans = allMembers.filter(member => !member.user.bot).size;
         const bots = allMembers.filter(member => member.user.bot).size;
-        
-        // Calculate online status (now with proper Guild Presences intent)
         const onlineMembers = allMembers.filter(member => 
             !member.user.bot && (
                 member.presence?.status === 'online' || 
@@ -5114,22 +4611,14 @@ async function handleServerInfoCommand(message) {
                 member.presence?.status === 'dnd'
             )
         ).size;
-        
-        // Channel breakdown
         const channels = guild.channels.cache;
         const textChannels = channels.filter(channel => channel.type === 0).size;
         const voiceChannels = channels.filter(channel => channel.type === 2).size;
         const categoryChannels = channels.filter(channel => channel.type === 4).size;
-        
-        // Role information
         const roles = guild.roles.cache.size - 1; // Exclude @everyone
-        
-        // Server features
         const features = guild.features.length > 0 ? guild.features.map(feature => 
             feature.toLowerCase().replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
         ).join(', ') : 'None';
-        
-        // Calculate server age
         const serverAge = Math.floor((Date.now() - guild.createdTimestamp) / (1000 * 60 * 60 * 24));
         
         const embed = new EmbedBuilder()
@@ -5137,32 +4626,21 @@ async function handleServerInfoCommand(message) {
             .setTitle(`📊 ${guild.name} Server Information`)
             .setThumbnail(guild.iconURL({ dynamic: true, size: 256 }))
             .addFields(
-                // Basic Info
                 { name: '👑 Owner', value: `${owner.user.tag}\n\`${owner.user.id}\``, inline: true },
                 { name: '📅 Server Age', value: `${serverAge} days\n<t:${Math.floor(guild.createdTimestamp / 1000)}:R>`, inline: true },
                 { name: '🆔 Server ID', value: `\`${guild.id}\``, inline: true },
-                
-                // Member Statistics
                 { name: '👥 Total Members', value: `${totalMembers.toLocaleString()}`, inline: true },
                 { name: '🧑‍💻 Humans', value: `${humans.toLocaleString()}`, inline: true },
                 { name: '🤖 Bots', value: `${bots.toLocaleString()}`, inline: true },
-                
-                // Activity
                 { name: '🟢 Online/Active', value: `${onlineMembers.toLocaleString()}`, inline: true },
                 { name: '📊 Human/Bot Ratio', value: `${bots > 0 ? (humans/bots).toFixed(1) : humans}:1`, inline: true },
                 { name: '📈 Online Rate', value: `${humans > 0 ? ((onlineMembers/humans)*100).toFixed(1) : 0}%`, inline: true },
-                
-                // Channels
                 { name: '💬 Text Channels', value: `${textChannels}`, inline: true },
                 { name: '🔊 Voice Channels', value: `${voiceChannels}`, inline: true },
                 { name: '📁 Categories', value: `${categoryChannels}`, inline: true },
-                
-                // Server Details
                 { name: '🎭 Roles', value: `${roles}`, inline: true },
                 { name: '😀 Emojis', value: `${guild.emojis.cache.size}`, inline: true },
                 { name: '🛡️ Verification', value: getVerificationLevel(guild.verificationLevel), inline: true },
-                
-                // Features
                 { name: '✨ Server Features', value: features.length > 1024 ? features.substring(0, 1021) + '...' : features, inline: false }
             )
             .setTimestamp();
@@ -5170,8 +4648,6 @@ async function handleServerInfoCommand(message) {
         if (guild.description) {
             embed.setDescription(`*${guild.description}*`);
         }
-        
-        // Add server boost info if applicable
         if (guild.premiumSubscriptionCount > 0) {
             embed.addFields({
                 name: '💎 Nitro Boosts',
@@ -5203,26 +4679,18 @@ async function handleServerInfoSlash(interaction) {
     
     try {
         const guild = interaction.guild;
-        
-        // Fetch detailed information
         const owner = await guild.fetchOwner();
         const members = await guild.members.fetch();
-        
-        // Analyze members
         const botCount = members.filter(member => member.user.bot).size;
         const humanCount = members.size - botCount;
         
         const onlineMembers = members.filter(member => 
             !member.user.bot && ['online', 'idle', 'dnd'].includes(member.presence?.status)
         ).size;
-        
-        // Count roles, channels by type
         const roles = guild.roles.cache.filter(role => role.name !== '@everyone');
         const textChannels = guild.channels.cache.filter(ch => ch.type === 0).size;
         const voiceChannels = guild.channels.cache.filter(ch => ch.type === 2).size;
         const categories = guild.channels.cache.filter(ch => ch.type === 4).size;
-        
-        // Create detailed embed
         const embed = new EmbedBuilder()
             .setColor('#4ecdc4')
             .setTitle(`📊 ${guild.name} - Server Information`)
@@ -5245,18 +4713,12 @@ async function handleServerInfoSlash(interaction) {
                 { name: '� Online Rate', value: `**${humanCount > 0 ? ((onlineMembers/humanCount)*100).toFixed(1) : 0}%**`, inline: true }
             )
             .setTimestamp();
-        
-        // Add server description if available
         if (guild.description) {
             embed.setDescription(`*${guild.description}*`);
         }
-        
-        // Add server banner if available
         if (guild.bannerURL()) {
             embed.setImage(guild.bannerURL({ dynamic: true, size: 1024 }));
         }
-        
-        // Server boost info
         if (guild.premiumTier > 0) {
             embed.addFields({
                 name: '💎 Server Boost',
@@ -5304,8 +4766,6 @@ async function handleAvatarSlash(interaction) {
 async function handleBannerCommand(message, args) {
     try {
         const user = message.mentions.users.first() || message.author;
-        
-        // Fetch the full user object to get banner info
         const fullUser = await client.users.fetch(user.id, { force: true });
         
         if (!fullUser.banner) {
@@ -5337,8 +4797,6 @@ async function handleBannerCommand(message, args) {
 async function handleBannerSlash(interaction) {
     try {
         const user = interaction.options.getUser('user') || interaction.user;
-        
-        // Fetch the full user object to get banner info
         const fullUser = await client.users.fetch(user.id, { force: true });
         
         if (!fullUser.banner) {
@@ -5423,7 +4881,6 @@ async function handleRemindersCommand(message) {
 }
 
 async function handlePrivacyCommand(message, args) {
-    // Bot owners have full access, server owners and authorized users have limited access
     if (!isBotOwner(message.author.id) && 
         message.guild.ownerId !== message.author.id && 
         !isAuthorizedUser(message.author.id)) {
@@ -5477,7 +4934,6 @@ async function handlePrivacyCommand(message, args) {
 }
 
 async function handlePrivacySlash(interaction) {
-    // Bot owners have full access, server owners and authorized users have limited access
     if (!isBotOwner(interaction.user.id) && 
         interaction.guild.ownerId !== interaction.user.id && 
         !isAuthorizedUser(interaction.user.id)) {
@@ -5573,8 +5029,6 @@ async function handleSetupMuteCommand(message) {
             .setTimestamp();
         
         const statusMessage = await message.reply({ embeds: [embed] });
-        
-        // Get or create muted role and set up permissions
         const mutedRole = await getMutedRole(message.guild);
         
         if (!mutedRole) {
@@ -5722,7 +5176,6 @@ async function handleAdminCommand(message, args) {
 }
 
 async function handleAntidoxxCommand(message, args) {
-    // Check if user is bot owner, authorized user, server owner, or admin
     if (!isBotOwner(message.author.id) &&
         !isAuthorizedUser(message.author.id) && 
         message.guild.ownerId !== message.author.id && 
@@ -5744,11 +5197,7 @@ async function handleAntidoxxCommand(message, args) {
             .setTimestamp();
         
         const statusMessage = await message.reply({ embeds: [embed] });
-        
-        // Viewlock all channels
         const result = await viewlockAllChannels(message.guild, reason, message.author);
-        
-        // Update the embed with results
         const resultEmbed = new EmbedBuilder()
             .setColor(result.success ? '#2ecc71' : '#ff4757')
             .setTitle(result.success ? '✅ Antidoxx Complete' : '⚠️ Antidoxx Partial')
@@ -5769,8 +5218,6 @@ async function handleAntidoxxCommand(message, args) {
         }
         
         await statusMessage.edit({ embeds: [resultEmbed] });
-        
-        // Log the action
         console.log(`🚨 Antidoxx activated by ${message.author.tag} in ${message.guild.name}: ${reason}`);
         
     } catch (error) {
@@ -5780,7 +5227,6 @@ async function handleAntidoxxCommand(message, args) {
 }
 
 async function handleAntidoxxSlash(interaction) {
-    // Check if user is bot owner, authorized user, server owner, or admin
     if (!isBotOwner(interaction.user.id) &&
         !isAuthorizedUser(interaction.user.id) && 
         interaction.guild.ownerId !== interaction.user.id && 
@@ -5805,11 +5251,7 @@ async function handleAntidoxxSlash(interaction) {
             .setTimestamp();
         
         await interaction.reply({ embeds: [embed] });
-        
-        // Viewlock all channels
         const result = await viewlockAllChannels(interaction.guild, reason, interaction.user);
-        
-        // Update the embed with results
         const resultEmbed = new EmbedBuilder()
             .setColor(result.success ? '#2ecc71' : '#ff4757')
             .setTitle(result.success ? '✅ Antidoxx Complete' : '⚠️ Antidoxx Partial')
@@ -5830,8 +5272,6 @@ async function handleAntidoxxSlash(interaction) {
         }
         
         await interaction.editReply({ embeds: [resultEmbed] });
-        
-        // Log the action
         console.log(`🚨 Antidoxx activated by ${interaction.user.tag} in ${interaction.guild.name}: ${reason}`);
         
     } catch (error) {
@@ -5859,8 +5299,6 @@ async function viewlockAllChannels(guild, reason, user) {
     try {
         const channels = await guild.channels.fetch();
         const everyoneRole = guild.roles.everyone;
-        
-        // Filter channels that can be viewlocked (text, voice, announcement, stage, forum)
         const lockableChannels = channels.filter(channel => 
             channel.type === 0 || // Text
             channel.type === 2 || // Voice
@@ -5876,8 +5314,6 @@ async function viewlockAllChannels(guild, reason, user) {
             result.success = false;
             return result;
         }
-        
-        // Process channels in batches to avoid rate limits
         const batchSize = 5;
         const channelBatches = [];
         const channelArray = Array.from(lockableChannels.values());
@@ -5889,19 +5325,14 @@ async function viewlockAllChannels(guild, reason, user) {
         for (const batch of channelBatches) {
             const batchPromises = batch.map(async (channel) => {
                 try {
-                    // Check if channel was already viewlocked before antidoxx
                     const everyoneOverwrite = channel.permissionOverwrites.cache.get(everyoneRole.id);
                     const wasAlreadyViewlocked = everyoneOverwrite && everyoneOverwrite.deny.has('ViewChannel');
-                    
-                    // Set @everyone to not be able to view the channel
                     await channel.permissionOverwrites.edit(everyoneRole, {
                         ViewChannel: false
                     }, {
                         reason: `Antidoxx by ${user.tag}: ${reason}`
                     });
                     result.successCount++;
-                    
-                    // Only track channels that weren't already viewlocked
                     if (!wasAlreadyViewlocked) {
                         result.viewlockedChannels.push({
                             id: channel.id,
@@ -5916,14 +5347,10 @@ async function viewlockAllChannels(guild, reason, user) {
             });
             
             await Promise.all(batchPromises);
-            
-            // Small delay between batches to avoid rate limits
             if (channelBatches.length > 1) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
         }
-        
-        // Save antidoxx data for this guild
         if (result.viewlockedChannels.length > 0) {
             antidoxxData.set(guild.id, {
                 channels: result.viewlockedChannels,
@@ -5934,9 +5361,6 @@ async function viewlockAllChannels(guild, reason, user) {
                 },
                 reason: reason
             });
-            
-            // Save immediately
-            // Data automatically saved to database
             console.log(`🔒 Tracked ${result.viewlockedChannels.length} newly viewlocked channels for guild ${guild.name}`);
         }
         
@@ -5961,7 +5385,6 @@ async function viewlockAllChannels(guild, reason, user) {
 }
 
 async function handleUndoAntidoxxCommand(message, args) {
-    // Check if user is bot owner, authorized user, server owner, or admin
     if (!isBotOwner(message.author.id) &&
         !isAuthorizedUser(message.author.id) && 
         message.guild.ownerId !== message.author.id && 
@@ -5983,11 +5406,7 @@ async function handleUndoAntidoxxCommand(message, args) {
             .setTimestamp();
         
         const statusMessage = await message.reply({ embeds: [embed] });
-        
-        // Restore channel visibility
         const result = await restoreChannelVisibility(message.guild, reason, message.author);
-        
-        // Update the embed with results
         const resultEmbed = new EmbedBuilder()
             .setColor(result.success ? '#2ecc71' : '#ff4757')
             .setTitle(result.success ? '✅ Antidoxx Undone' : '⚠️ Partial Restoration')
@@ -6008,8 +5427,6 @@ async function handleUndoAntidoxxCommand(message, args) {
         }
         
         await statusMessage.edit({ embeds: [resultEmbed] });
-        
-        // Log the action
         console.log(`🔓 Undoantidoxx activated by ${message.author.tag} in ${message.guild.name}: ${reason}`);
         
     } catch (error) {
@@ -6019,7 +5436,6 @@ async function handleUndoAntidoxxCommand(message, args) {
 }
 
 async function handleUndoAntidoxxSlash(interaction) {
-    // Check if user is bot owner, authorized user, server owner, or admin
     if (!isBotOwner(interaction.user.id) &&
         !isAuthorizedUser(interaction.user.id) && 
         interaction.guild.ownerId !== interaction.user.id && 
@@ -6044,11 +5460,7 @@ async function handleUndoAntidoxxSlash(interaction) {
             .setTimestamp();
         
         await interaction.reply({ embeds: [embed] });
-        
-        // Restore channel visibility
         const result = await restoreChannelVisibility(interaction.guild, reason, interaction.user);
-        
-        // Update the embed with results
         const resultEmbed = new EmbedBuilder()
             .setColor(result.success ? '#2ecc71' : '#ff4757')
             .setTitle(result.success ? '✅ Antidoxx Undone' : '⚠️ Partial Restoration')
@@ -6069,8 +5481,6 @@ async function handleUndoAntidoxxSlash(interaction) {
         }
         
         await interaction.editReply({ embeds: [resultEmbed] });
-        
-        // Log the action
         console.log(`🔓 Undoantidoxx activated by ${interaction.user.tag} in ${interaction.guild.name}: ${reason}`);
         
     } catch (error) {
@@ -6095,7 +5505,6 @@ async function restoreChannelVisibility(guild, reason, user) {
     };
     
     try {
-        // Check if there's antidoxx data for this guild
         const guildAntidoxxData = antidoxxData.get(guild.id);
         
         if (!guildAntidoxxData || !guildAntidoxxData.channels || guildAntidoxxData.channels.length === 0) {
@@ -6108,8 +5517,6 @@ async function restoreChannelVisibility(guild, reason, user) {
         result.totalCount = channelsToRestore.length;
         
         const everyoneRole = guild.roles.everyone;
-        
-        // Process channels in batches to avoid rate limits
         const batchSize = 5;
         const channelBatches = [];
         
@@ -6120,19 +5527,15 @@ async function restoreChannelVisibility(guild, reason, user) {
         for (const batch of channelBatches) {
             const batchPromises = batch.map(async (channelData) => {
                 try {
-                    // Try to get the channel
                     const channel = await guild.channels.fetch(channelData.id).catch(() => null);
                     
                     if (!channel) {
                         result.errors.push(`${channelData.name}: Channel no longer exists`);
                         return;
                     }
-                    
-                    // Check if @everyone has explicit ViewChannel deny permission
                     const everyoneOverwrite = channel.permissionOverwrites.cache.get(everyoneRole.id);
                     
                     if (everyoneOverwrite && everyoneOverwrite.deny.has('ViewChannel')) {
-                        // Remove the explicit deny permission (restore to inherit)
                         await channel.permissionOverwrites.edit(everyoneRole, {
                             ViewChannel: null
                         }, {
@@ -6141,7 +5544,6 @@ async function restoreChannelVisibility(guild, reason, user) {
                         result.successCount++;
                         console.log(`🔓 Restored visibility for ${channel.name}`);
                     } else {
-                        // Channel wasn't viewlocked anymore, count as success
                         result.successCount++;
                         console.log(`ℹ️ Channel ${channel.name} was already restored or not viewlocked`);
                     }
@@ -6152,16 +5554,11 @@ async function restoreChannelVisibility(guild, reason, user) {
             });
             
             await Promise.all(batchPromises);
-            
-            // Small delay between batches to avoid rate limits
             if (channelBatches.length > 1) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
         }
-        
-        // Clear the antidoxx data for this guild after restoration
         antidoxxData.delete(guild.id);
-        // Data automatically saved to database
         console.log(`🧹 Cleared antidoxx data for guild ${guild.name}`);
         
         if (result.successCount === result.totalCount) {
@@ -6601,8 +5998,6 @@ async function handleHelpSlash(interaction) {
     const isOwner = interaction.guild.ownerId === user.id;
     const isAuthorized = isAuthorizedUser(user.id);
     const isModerator = hasModeratorPermissions(user);
-    
-    // Determine user access level
     let accessLevel = 'Basic User';
     let accessColor = '#4ecdc4';
     
@@ -6625,8 +6020,6 @@ async function handleHelpSlash(interaction) {
         .setTitle('🤖 Bot Commands Help')
         .setDescription(`**Your Access Level:** ${accessLevel}\nShowing commands available to you:`)
         .setTimestamp();
-    
-    // Always available commands
     embed.addFields({
         name: '🛠️ Basic Commands',
         value: '`/ping` - Check bot latency\n`/serverinfo` - Show server info\n`/avatar [user]` - Show user avatar\n`/banner [user]` - Show user banner\n`/afk [reason]` - Set AFK status\n`/help` - Show this help',
@@ -6638,8 +6031,6 @@ async function handleHelpSlash(interaction) {
         value: '`/reminder set time message` - Set a reminder\n`/reminder list` - View your reminders\n`/reminder cancel id` - Cancel a reminder\n`/reminder event` - Schedule events\n`/reminder recurring` - Set repeating reminders',
         inline: false
     });
-    
-    // Moderator commands
     if (isModerator) {
         embed.addFields({
             name: '🔨 Moderation Commands',
@@ -6659,8 +6050,6 @@ async function handleHelpSlash(interaction) {
             inline: false
         });
     }
-    
-    // Owner/Authorized user exclusive commands
     if (isOwner || isAuthorized) {
         embed.addFields({
             name: '🎯 Auto-Reaction System',
@@ -6674,8 +6063,6 @@ async function handleHelpSlash(interaction) {
             inline: false
         });
     }
-    
-    // Bot Owner exclusive commands (highest authority)
     if (isBotOwner) {
         embed.addFields({
             name: '�️ Bot Owner Commands',
@@ -6683,7 +6070,6 @@ async function handleHelpSlash(interaction) {
             inline: false
         });
     }
-    // Server Owner exclusive commands (if not bot owner)
     else if (isOwner) {
         embed.addFields({
             name: '👑 Server Owner Commands',
@@ -6702,8 +6088,6 @@ async function handleHelpSlash(interaction) {
     
     await interaction.reply({ embeds: [embed] });
 }
-
-// Starboard reaction handler
 async function handleStarReaction(reaction, user, action) {
     try {
         const message = reaction.message;
@@ -6712,39 +6096,26 @@ async function handleStarReaction(reaction, user, action) {
         if (!config || !config.channelId) {
             return; // Starboard not configured
         }
-        
-        // Check if message author exists
         if (!message.author) {
             console.log('[Starboard] Message author not available');
             return;
         }
-
-        // Check if user is bot owner
         const isOwner = isBotOwner(user.id);
-        
-        // Bot owner bypass: Allow starring any message including own, ignores threshold
         if (isOwner) {
             console.log('[Starboard] Bot owner starred message - bypassing all rules');
-            
-            // Get starboard channel
             const starboardChannel = message.guild.channels.cache.get(config.channelId);
             if (!starboardChannel) {
                 console.error('[Starboard] Starboard channel not found:', config.channelId);
                 return;
             }
-
-            // Verify bot can send messages
             const botPermissions = starboardChannel.permissionsFor(message.guild.members.me);
             if (!botPermissions || !botPermissions.has(['SendMessages', 'EmbedLinks'])) {
                 console.error('[Starboard] Bot lacks permissions in starboard channel');
                 return;
             }
-
-            // Check if message already on starboard
             const existingStarboardMessageId = starboardMessages.get(message.id);
             
             if (!existingStarboardMessageId) {
-                // Create starboard message immediately
                 const embed = new EmbedBuilder()
                     .setColor('#FFD700')
                     .setAuthor({ 
@@ -6759,8 +6130,6 @@ async function handleStarReaction(reaction, user, action) {
                     })
                     .setTimestamp(message.createdAt)
                     .setFooter({ text: `⭐ Bot Owner Featured | Message ID: ${message.id}` });
-
-                // Add image if present
                 if (message.attachments.size > 0) {
                     const attachment = message.attachments.first();
                     if (attachment.contentType?.startsWith('image/')) {
@@ -6779,8 +6148,6 @@ async function handleStarReaction(reaction, user, action) {
             }
             return; // Skip normal star processing
         }
-        
-        // Don't allow regular users to star their own messages
         if (message.author.id === user.id) {
             try {
                 await reaction.users.remove(user.id);
@@ -6789,8 +6156,6 @@ async function handleStarReaction(reaction, user, action) {
             }
             return;
         }
-        
-        // Get fresh star count by fetching reaction users (exclude bots)
         const starReaction = message.reactions.cache.get('⭐');
         if (!starReaction) {
             return; // No star reaction found
@@ -6806,26 +6171,19 @@ async function handleStarReaction(reaction, user, action) {
         }
 
         const threshold = config.threshold || 3;
-        
-        // Get starboard channel
         const starboardChannel = message.guild.channels.cache.get(config.channelId);
         if (!starboardChannel) {
             console.error('[Starboard] Starboard channel not found:', config.channelId);
             return;
         }
-
-        // Verify bot can send messages
         const botPermissions = starboardChannel.permissionsFor(message.guild.members.me);
         if (!botPermissions || !botPermissions.has(['SendMessages', 'EmbedLinks'])) {
             console.error('[Starboard] Bot lacks permissions in starboard channel');
             return;
         }
-
-        // Check if message is already on starboard
         const existingStarboardMessageId = starboardMessages.get(message.id);
         
         if (starCount >= threshold) {
-            // Create or update starboard message
             const embed = new EmbedBuilder()
                 .setColor('#FFD700')
                 .setAuthor({ 
@@ -6840,8 +6198,6 @@ async function handleStarReaction(reaction, user, action) {
                 })
                 .setTimestamp(message.createdAt)
                 .setFooter({ text: `⭐ ${starCount} | Message ID: ${message.id}` });
-
-            // Add image if present
             if (message.attachments.size > 0) {
                 const attachment = message.attachments.first();
                 if (attachment.contentType?.startsWith('image/')) {
@@ -6850,25 +6206,20 @@ async function handleStarReaction(reaction, user, action) {
             }
 
             if (existingStarboardMessageId) {
-                // Update existing starboard message
                 try {
                     const starboardMessage = await starboardChannel.messages.fetch(existingStarboardMessageId);
                     await starboardMessage.edit({ embeds: [embed] });
                     console.log(`[Starboard] Updated message ${message.id} with ${starCount} stars`);
                 } catch (error) {
                     console.error('[Starboard] Error updating starboard message:', error);
-                    // If message was deleted, remove from tracking and create new one
                     starboardMessages.delete(message.id);
                     await DatabaseService.deleteStarboardMessage(message.guild.id, message.id);
-                    
-                    // Create new starboard message
                     const newStarboardMessage = await starboardChannel.send({ embeds: [embed] });
                     starboardMessages.set(message.id, newStarboardMessage.id);
                     await DatabaseService.saveStarboardMessage(message.guild.id, message.id, newStarboardMessage.id);
                     console.log(`[Starboard] Re-created starboard message for ${message.id}`);
                 }
             } else {
-                // Create new starboard message
                 try {
                     const starboardMessage = await starboardChannel.send({ embeds: [embed] });
                     starboardMessages.set(message.id, starboardMessage.id);
@@ -6879,7 +6230,6 @@ async function handleStarReaction(reaction, user, action) {
                 }
             }
         } else if (existingStarboardMessageId && starCount < threshold) {
-            // Remove from starboard if below threshold
             try {
                 const starboardMessage = await starboardChannel.messages.fetch(existingStarboardMessageId);
                 await starboardMessage.delete();
@@ -6888,7 +6238,6 @@ async function handleStarReaction(reaction, user, action) {
                 console.log(`[Starboard] Removed message ${message.id} (below threshold: ${starCount}/${threshold})`);
             } catch (error) {
                 console.error('[Starboard] Error deleting starboard message:', error);
-                // Clean up tracking even if delete failed
                 starboardMessages.delete(message.id);
                 await DatabaseService.deleteStarboardMessage(message.guild.id, message.id);
             }
@@ -6901,8 +6250,6 @@ async function handleStarReaction(reaction, user, action) {
         });
     }
 }
-
-// Placeholder functions for remaining slash command handlers
 async function handleStarboardSlash(interaction) {
     if (!hasModeratorPermissions(interaction.member)) {
         return interaction.reply({ 
@@ -6917,16 +6264,12 @@ async function handleStarboardSlash(interaction) {
         case 'setup':
             const channel = interaction.options.getChannel('channel');
             const threshold = interaction.options.getInteger('threshold') || 3;
-
-            // Validate channel type
             if (channel.type !== ChannelType.GuildText) {
                 return interaction.reply({ 
                     embeds: [createErrorEmbed('Invalid Channel', 'The starboard channel must be a text channel.')],
                     flags: MessageFlags.Ephemeral 
                 });
             }
-
-            // Validate bot permissions in target channel
             const botPermissions = channel.permissionsFor(interaction.guild.members.me);
             if (!botPermissions || !botPermissions.has(['ViewChannel', 'SendMessages', 'EmbedLinks'])) {
                 return interaction.reply({ 
@@ -6934,8 +6277,6 @@ async function handleStarboardSlash(interaction) {
                     flags: MessageFlags.Ephemeral 
                 });
             }
-
-            // Validate threshold
             if (threshold < 1 || threshold > 50) {
                 return interaction.reply({ 
                     embeds: [createErrorEmbed('Invalid Threshold', 'Threshold must be between 1 and 50.')],
@@ -6951,11 +6292,9 @@ async function handleStarboardSlash(interaction) {
             
             const saveSuccess = await DatabaseService.saveStarboardConfig(interaction.guild.id, newConfig);
             if (saveSuccess) {
-                // Update in-memory cache
                 starboardConfigs.set(interaction.guild.id, newConfig);
             } else {
                 console.error('[Starboard] Failed to save starboard config to database');
-                // Still update in-memory for current session
                 starboardConfigs.set(interaction.guild.id, newConfig);
             }
             
@@ -6979,7 +6318,6 @@ async function handleStarboardSlash(interaction) {
             const channelName = interaction.options.getString('name') || 'starboard';
             
             try {
-                // Check if bot can manage channels
                 const botPerms = interaction.guild.members.me.permissions;
                 if (!botPerms.has('ManageChannels')) {
                     return interaction.editReply({ 
@@ -7004,8 +6342,6 @@ async function handleStarboardSlash(interaction) {
                         }
                     ]
                 });
-
-                // Verify bot can use the channel
                 const botChannelPerms = starboardChannel.permissionsFor(interaction.guild.members.me);
                 if (!botChannelPerms.has(['SendMessages', 'EmbedLinks'])) {
                     await starboardChannel.delete();
@@ -7022,11 +6358,9 @@ async function handleStarboardSlash(interaction) {
                 
                 const autoSaveSuccess = await DatabaseService.saveStarboardConfig(interaction.guild.id, autoConfig);
                 if (autoSaveSuccess) {
-                    // Update in-memory cache
                     starboardConfigs.set(interaction.guild.id, autoConfig);
                 } else {
                     console.error('[Starboard] Failed to save auto starboard config to database');
-                    // Still update in-memory for current session
                     starboardConfigs.set(interaction.guild.id, autoConfig);
                 }
                 
@@ -7073,8 +6407,6 @@ async function handleStarboardSlash(interaction) {
                     flags: MessageFlags.Ephemeral 
                 });
             }
-
-            // Validate threshold
             if (newThreshold < 1 || newThreshold > 50) {
                 return interaction.reply({ 
                     embeds: [createErrorEmbed('Invalid Threshold', 'Threshold must be between 1 and 50.')],
@@ -7086,11 +6418,9 @@ async function handleStarboardSlash(interaction) {
             
             const thresholdSaveSuccess = await DatabaseService.saveStarboardConfig(interaction.guild.id, currentConfig);
             if (thresholdSaveSuccess) {
-                // Update in-memory cache
                 starboardConfigs.set(interaction.guild.id, currentConfig);
             } else {
                 console.error('[Starboard] Failed to save updated starboard config to database');
-                // Still update in-memory for current session
                 starboardConfigs.set(interaction.guild.id, currentConfig);
             }
             
@@ -7129,7 +6459,6 @@ async function handleStarboardSlash(interaction) {
 }
 
 async function handleCustomSlash(interaction) {
-    // Check if user has permission to use custom commands
     if (!hasCustomCommandPermissions(interaction.member)) {
         return interaction.reply({ 
             embeds: [createErrorEmbed('Permission Denied', 'Only authorized users, server owners, and bot owners can use custom command features.')], 
@@ -7166,8 +6495,6 @@ async function handleCustomSlash(interaction) {
                     flags: MessageFlags.Ephemeral 
                 });
             }
-            
-            // Save to database first
             try {
                 await DatabaseService.createCustomCommand(interaction.guild.id, {
                     name: createName,
@@ -7175,8 +6502,6 @@ async function handleCustomSlash(interaction) {
                     type: createType,
                     createdBy: interaction.user.id
                 });
-                
-                // Update in-memory cache
                 guildCommands.set(createName, {
                     name: createName,
                     response: createResponse,
@@ -7212,8 +6537,6 @@ async function handleCustomSlash(interaction) {
             }
             
             const existingCommand = guildCommands.get(editName);
-            
-            // Check if user has permission to edit (command creator or custom command permissions)
             if (existingCommand.createdBy !== interaction.user.id && 
                 !hasCustomCommandPermissions(interaction.member)) {
                 return interaction.reply({ 
@@ -7221,8 +6544,6 @@ async function handleCustomSlash(interaction) {
                     flags: MessageFlags.Ephemeral 
                 });
             }
-            
-            // Update in database first
             try {
                 const updateData = {
                     response: editResponse,
@@ -7232,8 +6553,6 @@ async function handleCustomSlash(interaction) {
                 if (editType) updateData.type = editType;
                 
                 await DatabaseService.updateCustomCommand(interaction.guild.id, editName, updateData);
-                
-                // Update in-memory cache
                 existingCommand.response = editResponse;
                 if (editType) existingCommand.type = editType;
                 existingCommand.editedBy = interaction.user.id;
@@ -7266,8 +6585,6 @@ async function handleCustomSlash(interaction) {
             }
             
             const commandToDelete = guildCommands.get(deleteName);
-            
-            // Check if user has permission to delete (command creator or custom command permissions)
             if (commandToDelete.createdBy !== interaction.user.id && 
                 !hasCustomCommandPermissions(interaction.member)) {
                 return interaction.reply({ 
@@ -7275,12 +6592,8 @@ async function handleCustomSlash(interaction) {
                     flags: MessageFlags.Ephemeral 
                 });
             }
-            
-            // Delete from database first
             try {
                 await DatabaseService.deleteCustomCommand(interaction.guild.id, deleteName);
-                
-                // Delete from in-memory cache
                 guildCommands.delete(deleteName);
             } catch (dbError) {
                 console.error('Failed to delete custom command from database:', dbError);
@@ -7462,8 +6775,6 @@ async function handleReminderSlash(interaction) {
             );
             await interaction.reply({ embeds: [cancelEmbed], flags: MessageFlags.Ephemeral });
             break;
-            
-        // Add other reminder subcommands (event, recurring, info)
         default:
             await interaction.reply({ embeds: [createErrorEmbed('Not Implemented', 'This subcommand is not yet implemented.')], flags: MessageFlags.Ephemeral });
     }
@@ -7602,7 +6913,6 @@ async function handleEmojiSlash(interaction) {
 }
 
 async function handleAutoreactSlash(interaction) {
-    // Bot owners have full access, server owners and authorized users have limited access
     if (!isBotOwner(interaction.user.id) && 
         interaction.guild.ownerId !== interaction.user.id && 
         !isAuthorizedUser(interaction.user.id)) {
@@ -7619,8 +6929,6 @@ async function handleAutoreactSlash(interaction) {
         case 'set':
             const user = interaction.options.getUser('user');
             const emoji = interaction.options.getString('emoji');
-            
-            // Validate emoji
             if (!isValidEmoji(emoji)) {
                 return interaction.reply({ 
                     embeds: [createErrorEmbed('Invalid Emoji', 'Please provide a valid emoji (Unicode, :name:, or custom emoji)')], 
@@ -7740,32 +7048,19 @@ async function handleAutoreactSlash(interaction) {
             });
     }
 }
-
-// Helper function to validate emoji
 function isValidEmoji(emoji) {
-    // Unicode emoji regex (simplified)
     const unicodeEmojiRegex = /[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/u;
-    
-    // Discord emoji format :name: or <:name:id> or <a:name:id>
     const discordEmojiRegex = /^(:\w+:|<a?:\w+:\d+>)$/;
     
     return unicodeEmojiRegex.test(emoji) || discordEmojiRegex.test(emoji) || emoji.length === 1;
 }
 
-// =============================================================================
-// BOT LOGIN
-// =============================================================================
-
 console.log('🔌 Connecting to Discord...');
-
-// Login to Discord
 client.login(process.env.TOKEN).catch(error => {
     console.error('❌ Failed to login to Discord:');
     console.error(error);
     process.exit(1);
 });
-
-// Graceful shutdown
 process.on('SIGINT', () => {
     console.log('\n👋 Shutting down bot gracefully...');
     console.log('✅ All data is already persisted in database - no manual save needed');

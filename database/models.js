@@ -1,6 +1,5 @@
-const mongoose = require('mongoose');
+﻿const mongoose = require('mongoose');
 
-// User Schema - for leveling, economy, and user data
 const userSchema = new mongoose.Schema({
     userId: { type: String, required: true },
     guildId: { type: String, required: true },
@@ -16,11 +15,9 @@ const userSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// Create compound index for efficient queries
 userSchema.index({ userId: 1, guildId: 1 }, { unique: true });
 userSchema.index({ guildId: 1, xp: -1 }); // For leaderboards
 
-// Custom Commands Schema
 const customCommandSchema = new mongoose.Schema({
     guildId: { type: String, required: true },
     name: { type: String, required: true },
@@ -37,7 +34,6 @@ const customCommandSchema = new mongoose.Schema({
 
 customCommandSchema.index({ guildId: 1, name: 1 }, { unique: true });
 
-// Quarantine Records Schema
 const quarantineRecordSchema = new mongoose.Schema({
     userId: { type: String, required: true },
     guildId: { type: String, required: true },
@@ -59,7 +55,6 @@ quarantineRecordSchema.index({ userId: 1, guildId: 1 });
 quarantineRecordSchema.index({ guildId: 1, active: 1 });
 quarantineRecordSchema.index({ expiresAt: 1 }); // For TTL cleanup
 
-// Reminders Schema
 const reminderSchema = new mongoose.Schema({
     userId: { type: String, required: true },
     guildId: { type: String, required: true },
@@ -76,7 +71,6 @@ const reminderSchema = new mongoose.Schema({
 reminderSchema.index({ userId: 1, active: 1 });
 reminderSchema.index({ reminderTime: 1, active: 1 });
 
-// AFK Users Schema
 const afkSchema = new mongoose.Schema({
     userId: { type: String, required: true },
     guildId: { type: String, required: true },
@@ -97,7 +91,6 @@ const afkSchema = new mongoose.Schema({
 afkSchema.index({ userId: 1, guildId: 1 }, { unique: true });
 afkSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 }); // MongoDB TTL
 
-// Guild Settings Schema
 const guildSettingsSchema = new mongoose.Schema({
     guildId: { type: String, required: true, unique: true },
     prefix: { type: String, default: '!' },
@@ -121,9 +114,6 @@ const guildSettingsSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// guildId already has unique constraint, no additional index needed
-
-// Starboard Schema
 const starboardSchema = new mongoose.Schema({
     guildId: { type: String, required: true },
     channelId: { type: String, required: true },
@@ -141,7 +131,6 @@ const starboardSchema = new mongoose.Schema({
 starboardSchema.index({ guildId: 1, messageId: 1 }, { unique: true });
 starboardSchema.index({ guildId: 1, stars: -1 });
 
-// Auto Reactions Schema
 const autoReactionSchema = new mongoose.Schema({
     guildId: { type: String, required: true },
     trigger: { type: String, required: true },
@@ -154,7 +143,6 @@ const autoReactionSchema = new mongoose.Schema({
 
 autoReactionSchema.index({ guildId: 1, trigger: 1 });
 
-// User Auto Reactions Schema (for mention-based auto reactions)
 const userAutoReactionSchema = new mongoose.Schema({
     guildId: { type: String, required: true },
     userId: { type: String, required: true },
@@ -168,7 +156,6 @@ const userAutoReactionSchema = new mongoose.Schema({
 
 userAutoReactionSchema.index({ guildId: 1, userId: 1 }, { unique: true });
 
-// Frozen Nickname Schema
 const frozenNicknameSchema = new mongoose.Schema({
     userId: { type: String, required: true },
     guildId: { type: String, required: true },
@@ -184,7 +171,6 @@ const frozenNicknameSchema = new mongoose.Schema({
 frozenNicknameSchema.index({ userId: 1, guildId: 1 }, { unique: true });
 frozenNicknameSchema.index({ guildId: 1, active: 1 });
 
-// Create and export models
 const User = mongoose.model('User', userSchema);
 const CustomCommand = mongoose.model('CustomCommand', customCommandSchema);
 const QuarantineRecord = mongoose.model('QuarantineRecord', quarantineRecordSchema);
